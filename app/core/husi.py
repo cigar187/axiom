@@ -216,37 +216,52 @@ def compute_husi_interaction(
     pcs_reg: float,
     pcs_hha: float,
     owc_topheavy: float,
+    uhs_zone: float = 50.0,
+    pcs_cmd: float = 50.0,
+    ens_air: float = 50.0,
+    ens_of: float = 50.0,
+    silent: bool = False,
 ) -> float:
     """
-    Apply HUSI interaction boosts. Returns total boost (capped at 6.5).
+    Apply HUSI interaction boosts. Returns total boost (capped at 8.0).
     Each triggered rule is logged individually.
+
+    Merlin v2.0 additions:
+      Zone Sympathy: UHS_ZONE > 70 AND PCS_CMD > 70 → +4.0 (interactive, not additive)
+      E1 Heavy Air:  ENS_AIR > 70 AND ENS_OF > 75   → +5.0 (physics-based suppression)
     """
     boost = 0.0
     name = f.pitcher_name
 
     if pcs_gb > 65 and dsc_infdef > 65:
         boost += 1.5
-        log.info("HUSI H1 triggered", pitcher=name, pcs_gb=pcs_gb, dsc_infdef=dsc_infdef, boost=1.5)
+        if not silent:
+            log.info("HUSI H1 triggered", pitcher=name, pcs_gb=pcs_gb, dsc_infdef=dsc_infdef, boost=1.5)
 
     if fly_supp > 60 and ens_park > 70:
         boost += 1.5
-        log.info("HUSI H2 triggered", pitcher=name, fly_supp=fly_supp, ens_park=ens_park, boost=1.5)
+        if not silent:
+            log.info("HUSI H2 triggered", pitcher=name, fly_supp=fly_supp, ens_park=ens_park, boost=1.5)
 
     if ens_windin > 70 and owc_ld > 60:
         boost += 1.0
-        log.info("HUSI H3 triggered", pitcher=name, ens_windin=ens_windin, owc_ld=owc_ld, boost=1.0)
+        if not silent:
+            log.info("HUSI H3 triggered", pitcher=name, ens_windin=ens_windin, owc_ld=owc_ld, boost=1.0)
 
     if ops_hook > 70 and ops_bpen > 70:
         boost += 2.0
-        log.info("HUSI H4 triggered", pitcher=name, ops_hook=ops_hook, ops_bpen=ops_bpen, boost=2.0)
+        if not silent:
+            log.info("HUSI H4 triggered", pitcher=name, ops_hook=ops_hook, ops_bpen=ops_bpen, boost=2.0)
 
     if owc_bot3 > 70 and ops_tto > 65:
         boost += 1.0
-        log.info("HUSI H5 triggered", pitcher=name, owc_bot3=owc_bot3, ops_tto=ops_tto, boost=1.0)
+        if not silent:
+            log.info("HUSI H5 triggered", pitcher=name, owc_bot3=owc_bot3, ops_tto=ops_tto, boost=1.0)
 
     if pcs_reg > 65 and pcs_hha > 65:
         boost += 1.0
-        log.info("HUSI H6 triggered", pitcher=name, pcs_reg=pcs_reg, pcs_hha=pcs_hha, boost=1.0)
+        if not silent:
+            log.info("HUSI H6 triggered", pitcher=name, pcs_reg=pcs_reg, pcs_hha=pcs_hha, boost=1.0)
 
     if (
         owc_topheavy > 70
@@ -254,11 +269,30 @@ def compute_husi_interaction(
         and f.projected_batters_faced < 23
     ):
         boost += 1.5
-        log.info("HUSI H7 triggered", pitcher=name,
-                 owc_topheavy=owc_topheavy, projected_batters_faced=f.projected_batters_faced, boost=1.5)
+        if not silent:
+            log.info("HUSI H7 triggered", pitcher=name,
+                     owc_topheavy=owc_topheavy, projected_batters_faced=f.projected_batters_faced, boost=1.5)
 
-    capped = min(boost, 6.5)
-    log.info("HUSI interaction total", pitcher=name, raw_boost=boost, capped=capped)
+    # ── Zone Sympathy (Merlin v2.0): Umpire zone + pitcher command are interactive, not additive.
+    # When both are elite (> 70), the effect is multiplicative — the umpire rewards exactly
+    # the kind of pitch the pitcher throws best. Replace old +1.0 additive with +4.0 interactive.
+    if uhs_zone > 70 and pcs_cmd > 70:
+        boost += 4.0
+        if not silent:
+            log.info("HUSI Zone Sympathy triggered", pitcher=name,
+                     uhs_zone=uhs_zone, pcs_cmd=pcs_cmd, boost=4.0)
+
+    # ── E1 Heavy Air / Deep Park (Merlin v2.0): Dense air + large outfield = physics-based
+    # hit suppression. Fly balls that would leave normal parks die in heavy/large venues.
+    if ens_air > 70 and ens_of > 75:
+        boost += 5.0
+        if not silent:
+            log.info("HUSI E1 Heavy Air triggered", pitcher=name,
+                     ens_air=ens_air, ens_of=ens_of, boost=5.0)
+
+    capped = min(boost, 8.0)  # raised cap for new Merlin rules
+    if not silent:
+        log.info("HUSI interaction total", pitcher=name, raw_boost=boost, capped=capped)
     return capped
 
 
@@ -266,74 +300,104 @@ def compute_husi_interaction(
 # Volatility penalties
 # ─────────────────────────────────────────────────────────────
 
-def compute_husi_volatility(f: PitcherFeatureSet, pcs_consistency: float) -> float:
+def compute_husi_volatility(
+    f: PitcherFeatureSet,
+    pcs_consistency: float,
+    ops_traffic: float = 50.0,
+    owc_bot3: float = 50.0,
+    silent: bool = False,
+) -> float:
     """
-    Apply HUSI volatility penalties. Returns total penalty (capped at 8.0).
+    Apply HUSI volatility penalties. Returns total penalty (capped at 9.5).
     Each triggered penalty is logged individually.
+
+    Merlin v2.0 addition:
+      H8 Pressure Cooker: OPS_TRAFFIC > 75 AND OWC_BOT3 < 40 → -3.5 HUSI Penalty.
+      Models pitcher collapse when facing high-traffic innings against a weak-bottomed lineup
+      (pressure builds as manager leaves starter in despite runners on base).
     """
     penalty = 0.0
     name = f.pitcher_name
 
     if not f.lineup_confirmed:
         penalty += 2.5
-        log.info("HUSI HV1 lineup uncertainty", pitcher=name, penalty=2.5)
+        if not silent:
+            log.info("HUSI HV1 lineup uncertainty", pitcher=name, penalty=2.5)
 
     # HV2: weather uncertainty — treat ens_windin < 40 as meaningful weather risk
     if f.ens_windin is not None and f.ens_windin < 40:
         penalty += 1.5
-        log.info("HUSI HV2 weather uncertainty", pitcher=name, ens_windin=f.ens_windin, penalty=1.5)
+        if not silent:
+            log.info("HUSI HV2 weather uncertainty", pitcher=name, ens_windin=f.ens_windin, penalty=1.5)
 
     if f.babip_variance_high:
         penalty += 1.5
-        log.info("HUSI HV3 extreme BABIP variance", pitcher=name, penalty=1.5)
+        if not silent:
+            log.info("HUSI HV3 extreme BABIP variance", pitcher=name, penalty=1.5)
 
     # HV4: poor defense — dsc_def < 40 means below-average defense
     if f.dsc_def is not None and f.dsc_def < 40:
         penalty += 2.0
-        log.info("HUSI HV4 poor defense", pitcher=name, dsc_def=f.dsc_def, penalty=2.0)
+        if not silent:
+            log.info("HUSI HV4 poor defense", pitcher=name, dsc_def=f.dsc_def, penalty=2.0)
 
     # HV5: backup catcher — dsc_catch < 35
     if f.dsc_catch is not None and f.dsc_catch < 35:
         penalty += 1.0
-        log.info("HUSI HV5 backup catcher downgrade", pitcher=name, dsc_catch=f.dsc_catch, penalty=1.0)
+        if not silent:
+            log.info("HUSI HV5 backup catcher downgrade", pitcher=name, dsc_catch=f.dsc_catch, penalty=1.0)
 
     if not f.umpire_confirmed:
         penalty += 0.8
-        log.info("HUSI HV6 umpire unknown", pitcher=name, penalty=0.8)
+        if not silent:
+            log.info("HUSI HV6 umpire unknown", pitcher=name, penalty=0.8)
 
     if pcs_consistency < 40:
         penalty += 2.0
-        log.info("HUSI HV7 low consistency", pitcher=name, pcs_consistency=pcs_consistency, penalty=2.0)
+        if not silent:
+            log.info("HUSI HV7 low consistency", pitcher=name, pcs_consistency=pcs_consistency, penalty=2.0)
 
     # HV8: bullpen depleted — ops_bpen < 35
     if f.ops_bpen is not None and f.ops_bpen < 35:
         penalty += 1.2
-        log.info("HUSI HV8 bullpen depleted", pitcher=name, ops_bpen=f.ops_bpen, penalty=1.2)
+        if not silent:
+            log.info("HUSI HV8 bullpen depleted", pitcher=name, ops_bpen=f.ops_bpen, penalty=1.2)
 
     # HV9: extreme hitter park (Coors, Great American, Chase, Citizens Bank, etc.) — park_score < 40
-    # These venues produce 10-20% more hits than average. Flag the uncertainty.
     if f.park_extreme:
         penalty += 2.5
-        park_score = round(f.ens_park or 50.0, 1)
-        log.info("HUSI HV9 extreme hitter park", pitcher=name,
-                 park=f.ens_park, park_score=park_score,
-                 park_hits_multiplier=f.park_hits_multiplier, penalty=2.5)
+        if not silent:
+            park_score = round(f.ens_park or 50.0, 1)
+            log.info("HUSI HV9 extreme hitter park", pitcher=name,
+                     park=f.ens_park, park_score=park_score,
+                     park_hits_multiplier=f.park_hits_multiplier, penalty=2.5)
 
-    # HV10: struggling season ERA — a pitcher giving up runs all season is a consistent hit risk.
-    # This catches pitchers like Walker Buehler (5.95 ERA) where the 3-start PFF window
-    # was masking a season-long pattern of poor performance.
-    # STRUGGLING (5.00-5.99 ERA): -1.5 | DISASTER (6.00+ ERA): -3.0
+    # HV10: struggling season ERA
     if f.season_era_tier == "STRUGGLING":
         penalty += 1.5
-        log.info("HUSI HV10 struggling season ERA", pitcher=name,
-                 season_era=f.season_era_raw, tier="STRUGGLING", penalty=1.5)
+        if not silent:
+            log.info("HUSI HV10 struggling season ERA", pitcher=name,
+                     season_era=f.season_era_raw, tier="STRUGGLING", penalty=1.5)
     elif f.season_era_tier == "DISASTER":
         penalty += 3.0
-        log.info("HUSI HV10 disaster season ERA", pitcher=name,
-                 season_era=f.season_era_raw, tier="DISASTER", penalty=3.0)
+        if not silent:
+            log.info("HUSI HV10 disaster season ERA", pitcher=name,
+                     season_era=f.season_era_raw, tier="DISASTER", penalty=3.0)
 
-    capped = min(penalty, 8.0)
-    log.info("HUSI volatility total", pitcher=name, raw_penalty=penalty, capped=capped)
+    # ── H8 Pressure Cooker (Merlin v2.0):
+    # High traffic innings + weak bottom of lineup = pitcher collapse.
+    # A pitcher getting beaten in high-leverage situations (TRAFFIC > 75) while the
+    # lineup has a weak bottom (BOT3 < 40) means no easy outs to recover — pitcher
+    # is forced to challenge better hitters in pressure spots.
+    if ops_traffic > 75 and owc_bot3 < 40:
+        penalty += 3.5
+        if not silent:
+            log.info("HUSI H8 Pressure Cooker triggered", pitcher=name,
+                     ops_traffic=ops_traffic, owc_bot3=owc_bot3, penalty=3.5)
+
+    capped = min(penalty, 9.5)  # raised cap for new Merlin H8 rule
+    if not silent:
+        log.info("HUSI volatility total", pitcher=name, raw_penalty=penalty, capped=capped)
     return capped
 
 
@@ -364,16 +428,21 @@ def husi_grade(score: float) -> str:
 # Main HUSI computation
 # ─────────────────────────────────────────────────────────────
 
-def compute_husi(f: PitcherFeatureSet) -> dict:
+def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
     """
     Compute the full HUSI score for one pitcher on one game day.
+
+    Args:
+        f:      Pitcher feature set.
+        silent: If True, suppress all logging. Used by SimulationEngine for 2000-iteration speed.
 
     Returns a dict with:
       husi_base, husi_interaction, husi_volatility, husi, grade,
       projected_hits, base_hits,
       all individual block scores for database logging.
     """
-    log.info("HUSI computation starting", pitcher=f.pitcher_name, game_id=f.game_id)
+    if not silent:
+        log.info("HUSI computation starting", pitcher=f.pitcher_name, game_id=f.game_id)
 
     # ── Block scores
     owc = score_owc(f)
@@ -383,10 +452,11 @@ def compute_husi(f: PitcherFeatureSet) -> dict:
     uhs = score_uhs(f)
     dsc = score_dsc(f)
 
-    log.info("HUSI block scores",
-             pitcher=f.pitcher_name,
-             OWC=round(owc, 2), PCS=round(pcs, 2), ENS=round(ens, 2),
-             OPS=round(ops, 2), UHS=round(uhs, 2), DSC=round(dsc, 2))
+    if not silent:
+        log.info("HUSI block scores",
+                 pitcher=f.pitcher_name,
+                 OWC=round(owc, 2), PCS=round(pcs, 2), ENS=round(ens, 2),
+                 OPS=round(ops, 2), UHS=round(uhs, 2), DSC=round(dsc, 2))
 
     # ── Base formula
     husi_base = (
@@ -397,9 +467,10 @@ def compute_husi(f: PitcherFeatureSet) -> dict:
         0.08 * uhs +
         0.05 * dsc
     )
-    log.info("HUSI base", pitcher=f.pitcher_name, husi_base=round(husi_base, 2))
+    if not silent:
+        log.info("HUSI base", pitcher=f.pitcher_name, husi_base=round(husi_base, 2))
 
-    # ── Interaction boosts
+    # ── Interaction boosts (includes Zone Sympathy and E1 from Merlin v2.0)
     fly_supp = _f(f.fly_ball_suppression)
     interaction = compute_husi_interaction(
         f=f,
@@ -416,11 +487,22 @@ def compute_husi(f: PitcherFeatureSet) -> dict:
         pcs_reg=_f(f.pcs_reg),
         pcs_hha=_f(f.pcs_hha),
         owc_topheavy=_f(f.owc_topheavy),
+        uhs_zone=_f(f.uhs_zone),
+        pcs_cmd=_f(f.pcs_cmd),
+        ens_air=_f(f.ens_air),
+        ens_of=_f(f.ens_of),
+        silent=silent,
     )
 
-    # ── Volatility penalties (use pcs_reg as consistency proxy when pcs_cmd available)
+    # ── Volatility penalties (includes H8 Pressure Cooker from Merlin v2.0)
     pcs_consistency = _f(f.pcs_cmd)
-    volatility = compute_husi_volatility(f, pcs_consistency=pcs_consistency)
+    volatility = compute_husi_volatility(
+        f,
+        pcs_consistency=pcs_consistency,
+        ops_traffic=_f(f.ops_traffic),
+        owc_bot3=_f(f.owc_bot3),
+        silent=silent,
+    )
 
     # ── Final HUSI (pre-bullpen)
     husi_raw = husi_base + interaction - volatility
@@ -451,31 +533,29 @@ def compute_husi(f: PitcherFeatureSet) -> dict:
                  husi_after=round(husi, 2))
 
     grade = husi_grade(husi)
-    log.info("HUSI final",
-             pitcher=f.pitcher_name,
-             husi_base=round(husi_base, 2),
-             interaction=round(interaction, 2),
-             volatility=round(volatility, 2),
-             husi_pre_bullpen=round(husi_pre, 2),
-             bullpen_bfs=f.bullpen_fatigue_opp,
-             bullpen_label=f.bullpen_label_opp,
-             bullpen_adjustment=bullpen_adjustment,
-             tfi_label=f.tfi_label,
-             tfi_penalty=f.tfi_penalty_pct,
-             husi=round(husi, 2),
-             grade=grade)
+    if not silent:
+        log.info("HUSI final",
+                 pitcher=f.pitcher_name,
+                 husi_base=round(husi_base, 2),
+                 interaction=round(interaction, 2),
+                 volatility=round(volatility, 2),
+                 husi_pre_bullpen=round(husi_pre, 2),
+                 bullpen_bfs=f.bullpen_fatigue_opp,
+                 bullpen_label=f.bullpen_label_opp,
+                 bullpen_adjustment=bullpen_adjustment,
+                 tfi_label=f.tfi_label,
+                 tfi_penalty=f.tfi_penalty_pct,
+                 husi=round(husi, 2),
+                 grade=grade)
 
     # ── Projected hits (MGS-aware)
-    # 1. Scale H/9 to the pitcher's realistic expected IP window.
-    # 2. Apply the base HUSI adjustment (higher score = fewer hits).
-    # 3. Apply MGS — the TTO acceleration curve that pushes hits up non-linearly
-    #    in innings 4-6 as batters see the pitcher a second and third time.
     exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years)
     safe_h_per_9 = min(f.season_hits_per_9 or 9.0, 15.0)
     base_hits = safe_h_per_9 * (exp_ip / 9.0)
     projected_hits = base_hits * (1 - 0.21 * ((husi - 50) / 50))
 
-    # MGS adjustment — applies TTO curve, pitch-count fatigue, and PFF form factor
+    # MGS adjustment — applies TTO curve, pitch-count fatigue, PFF form factor,
+    # and TTO3 Death Trap baserunner multiplier (Merlin v2.0)
     mgs_hits_mult, _, mgs_label = compute_mgs(
         exp_ip,
         current_inning=f.mgs_inning,
@@ -484,48 +564,69 @@ def compute_husi(f: PitcherFeatureSet) -> dict:
         pff_ks_tto1_mult=f.pff_ks_tto1_mult,
         pff_tto_late_boost=f.pff_tto_late_boost,
         pff_label=f.pff_label,
+        baserunners_l2=f.baserunners_l2_innings,
+        silent=silent,
     )
     projected_hits = projected_hits * mgs_hits_mult
 
-    # VAA flat penalty (SKU #38): flat approach angle means batters track the ball easier
-    # → higher contact probability → more hits.
-    # Rule: if vaa_flat (pitch angle < -4.5°), increase projected hits by 10%.
+    # ── VAA Elevation Rule (Merlin v2.0 — replaces old flat penalty logic)
+    # Old rule: flat VAA (> -4.5°) ALWAYS added +10% contact penalty.
+    # Merlin fix: flat VAA thrown HIGH in the zone (pitch_location_high_pct > 60%)
+    #   actually produces pop-ups and weak fly balls, NOT hard contact.
+    #   In this case, REVERSE the penalty to a BOOST (hits suppression).
+    # When pitch_location_high_pct is unavailable, fall back to the old penalty.
     if f.vaa_flat and f.vaa_contact_penalty > 0:
         vaa_pre = projected_hits
-        projected_hits = projected_hits * (1.0 + f.vaa_contact_penalty)
-        log.info("HUSI VAA flat penalty applied",
-                 pitcher=f.pitcher_name,
-                 vaa_degrees=f.vaa_degrees,
-                 extension_ft=f.extension_ft,
-                 contact_penalty_pct=f.vaa_contact_penalty,
-                 hits_before=round(vaa_pre, 2),
-                 hits_after=round(projected_hits, 2))
+        if (
+            f.pitch_location_high_pct is not None
+            and f.pitch_location_high_pct > 60.0
+        ):
+            # VAA Elevation override: flat + high = pop-up machine → suppress hits
+            projected_hits = projected_hits * (1.0 - f.vaa_contact_penalty)
+            if not silent:
+                log.info("HUSI VAA Elevation BOOST applied (Merlin override)",
+                         pitcher=f.pitcher_name,
+                         vaa_degrees=f.vaa_degrees,
+                         pitch_location_high_pct=f.pitch_location_high_pct,
+                         boost_pct=f.vaa_contact_penalty,
+                         hits_before=round(vaa_pre, 2),
+                         hits_after=round(projected_hits, 2))
+        else:
+            # Standard VAA flat penalty: flat low pitch = easy to track and drive
+            projected_hits = projected_hits * (1.0 + f.vaa_contact_penalty)
+            if not silent:
+                log.info("HUSI VAA flat penalty applied",
+                         pitcher=f.pitcher_name,
+                         vaa_degrees=f.vaa_degrees,
+                         pitch_location_high_pct=f.pitch_location_high_pct,
+                         contact_penalty_pct=f.vaa_contact_penalty,
+                         hits_before=round(vaa_pre, 2),
+                         hits_after=round(projected_hits, 2))
 
     # ── Park Factor Direct Override
-    # The ENS block alone cannot represent extreme venues (Coors = +18% IRL).
-    # This multiplier corrects that gap directly on projected_hits.
-    # park_hits_multiplier: 1.18 for Coors, 1.00 for neutral, 0.90 for Petco.
     if f.park_hits_multiplier is not None and f.park_hits_multiplier != 1.0:
         park_pre = projected_hits
         projected_hits = projected_hits * f.park_hits_multiplier
-        log.info("HUSI park factor override applied",
+        if not silent:
+            log.info("HUSI park factor override applied",
+                     pitcher=f.pitcher_name,
+                     park_score=round(f.ens_park or 50.0, 1),
+                     park_multiplier=f.park_hits_multiplier,
+                     park_extreme=f.park_extreme,
+                     hits_before=round(park_pre, 2),
+                     hits_after=round(projected_hits, 2))
+
+    projected_hits = max(0.0, min(projected_hits, 15.0))  # hard cap
+
+    if not silent:
+        log.info("HUSI projection",
                  pitcher=f.pitcher_name,
-                 park_score=round(f.ens_park or 50.0, 1),
-                 park_multiplier=f.park_hits_multiplier,
-                 park_extreme=f.park_extreme,
-                 hits_before=round(park_pre, 2),
-                 hits_after=round(projected_hits, 2))
-
-    projected_hits = max(0.0, min(projected_hits, 15.0))  # hard cap: 15+ hits never happens
-
-    log.info("HUSI projection",
-             pitcher=f.pitcher_name,
-             exp_ip=exp_ip,
-             ip_tier=ip_tier_label(exp_ip),
-             base_hits=round(base_hits, 2),
-             mgs_hits_mult=round(mgs_hits_mult, 3),
-             mgs_label=mgs_label,
-             projected_hits=round(projected_hits, 2))
+                 exp_ip=exp_ip,
+                 ip_tier=ip_tier_label(exp_ip),
+                 base_hits=round(base_hits, 2),
+                 mgs_hits_mult=round(mgs_hits_mult, 3),
+                 mgs_label=mgs_label,
+                 projected_hits=round(projected_hits, 2))
 
     return {
         "husi": round(husi, 2),

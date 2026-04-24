@@ -123,6 +123,23 @@ class PitcherTodayRow(BaseModel):
     pff_score: Optional[float] = None
     pff_label: Optional[str] = None
 
+    # ── Merlin Simulation Engine (N=2000) outputs
+    # Populated after the daily pipeline runs the Monte Carlo simulation.
+    # None = simulation has not run yet for this pitcher.
+    sim_median_hits: Optional[float] = None     # most likely hits result
+    sim_median_ks: Optional[float] = None       # most likely Ks result
+    sim_over_pct_hits: Optional[float] = None   # % of runs: proj_hits > book line
+    sim_under_pct_hits: Optional[float] = None  # % of runs: proj_hits < book line
+    sim_p5_hits: Optional[float] = None         # 5th percentile — Shutdown Floor
+    sim_p95_hits: Optional[float] = None        # 95th percentile — Shelling Ceiling
+    sim_over_pct_ks: Optional[float] = None     # % of runs: proj_ks > book line
+    sim_under_pct_ks: Optional[float] = None    # % of runs: proj_ks < book line
+    sim_p5_ks: Optional[float] = None           # 5th percentile — Shutdown Floor
+    sim_p95_ks: Optional[float] = None          # 95th percentile — Kill Streak Ceiling
+    sim_confidence_hits: Optional[str] = None   # HIGH_OVER / HIGH_UNDER / LEAN_OVER / LEAN_UNDER / SPLIT
+    sim_confidence_ks: Optional[str] = None
+    sim_kill_streak_prob: Optional[float] = None  # % of runs where proj_ks >= 10
+
 
 class PitchersTodayResponse(BaseModel):
     date: date

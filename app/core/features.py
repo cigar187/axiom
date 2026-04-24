@@ -23,7 +23,8 @@ class PitcherFeatureSet:
     pitcher_id: str = ""
     pitcher_name: str = ""
     game_id: str = ""
-    team: str = ""
+    team: str = ""           # team abbreviation, e.g. "LAD"
+    team_id_numeric: str = ""  # MLB numeric team ID, e.g. "119" — used for manager lookup
     opponent: str = ""
     handedness: Optional[str] = None
 
@@ -240,13 +241,32 @@ class PitcherFeatureSet:
     # Both are calculated from the MLB Stats API live game feed.
     #
     # Extension boost: > 6.8 ft → +1.5 mph perceived velocity → boosts per_velo in KUSI
-    # VAA flat penalty: < -4.5° → ball is easier to track → +10% contact probability in HUSI
+    # VAA flat penalty: > -4.5° (flat trajectory) → easier to track → +10% contact in HUSI
+    # VAA Elevation override (Merlin): if VAA > -4.5 AND pitch_location_high_pct > 60%
+    #   → flat pitch thrown high produces pop-ups, NOT line drives → REVERSE to a suppression BOOST.
     #
-    # Convention: VAA is a negative angle (ball descends). Flatter = less negative (closer to 0°).
-    # The user spec defines "flat" as < -4.5° (i.e. more negative than -4.5°).
+    # Convention: VAA is a negative angle (ball descends).
+    # Flatter = less negative (closer to 0°). VAA > -4.5° = flat trajectory.
     vaa_degrees: Optional[float] = None        # average VAA this game (negative degrees)
     extension_ft: Optional[float] = None       # average release extension (feet)
-    vaa_flat: bool = False                     # True when vaa_degrees < -4.5°
+    vaa_flat: bool = False                     # True when vaa_degrees > -4.5° (flat trajectory)
     extension_elite: bool = False              # True when extension_ft > 6.8 ft
-    vaa_contact_penalty: float = 0.0          # 0.10 when vaa_flat is True, else 0.0
+    vaa_contact_penalty: float = 0.0          # +0.10 contact multiplier when vaa_flat and NOT elevated
     extension_velo_boost: float = 0.0         # per_velo score boost when extension_elite
+
+    # ── Simulation inputs (Merlin v2.0)
+    # pitch_location_high_pct: % of pitches in the upper third of the strike zone.
+    #   Source: Baseball Savant / Statcast. Used for the VAA Elevation override rule.
+    #   When None, the override is not applied (safe default keeps existing VAA penalty logic).
+    # baserunners_l2_innings: estimated baserunners in the last 2 innings.
+    #   In live mode: actual baserunners from box score (on-base events in innings N-1 and N-2).
+    #   In pre-game simulation: sampled from a Poisson distribution based on pitcher WHIP.
+    #   Used for TTO3 Death Trap: if inning ≥ 6 AND baserunners > 2 → hits_mult 1.38 → 1.85.
+    pitch_location_high_pct: Optional[float] = None  # 0-100, % pitches in upper zone
+    baserunners_l2_innings: Optional[float] = None   # estimated baserunners in last 2 innings
+
+    # ── TFI directional travel (Merlin v2.0)
+    # Signed timezone shift: positive = traveled east (body clock behind local time = harder)
+    #   negative = traveled west (body clock ahead = less disruptive).
+    # Used to apply directional TFI penalties (Merlin Circadian Travel Adjustment).
+    tfi_signed_tz_shift: int = 0              # signed tz delta: + = eastward, - = westward

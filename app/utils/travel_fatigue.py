@@ -39,7 +39,13 @@ log = get_logger("travel_fatigue")
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 
 # Penalty applied to HUSI when travel/fatigue conditions are triggered
-TFI_HUSI_PENALTY_PCT = 0.07   # 7% reduction in HUSI score
+# Merlin Circadian Travel Adjustment:
+#   Eastward travel + getaway day = -12% (body clock most disrupted — sun rises earlier locally)
+#   Westward travel              = -4%  (body clock runs ahead of local time — easier to adapt)
+#   Default / other condition    = -7%  (original flat penalty)
+TFI_PENALTY_DEFAULT = 0.07     # baseline flat penalty
+TFI_PENALTY_EASTWARD_GETAWAY = 0.12  # Eastward travel on getaway day — hardest condition
+TFI_PENALTY_WESTWARD = 0.04   # Westward travel — body clock adapts more easily
 GETAWAY_REST_THRESHOLD = 16.0  # hours of rest below which penalty triggers
 TZ_SHIFT_THRESHOLD = 2         # timezone hour delta at or above which penalty triggers
 
@@ -195,10 +201,11 @@ def compute_travel_fatigue_index(
             "team_id": str,
             "rest_hours": float,
             "tz_shift": int,              # absolute timezone delta in hours
+            "signed_tz_shift": int,       # signed: + = eastward, - = westward
             "getaway_day": bool,           # rest_hours < 16
             "cross_timezone": bool,        # tz_shift >= 2
             "penalty_active": bool,        # True if either condition triggered
-            "penalty_pct": float,          # 0.07 if active, else 0.0
+            "penalty_pct": float,          # 0.12 / 0.07 / 0.04 based on direction
             "tfi_label": str,              # human-readable label
         }
     """
@@ -206,6 +213,7 @@ def compute_travel_fatigue_index(
         "team_id": str(team_id),
         "rest_hours": 24.0,          # assume full rest as safe default
         "tz_shift": 0,
+        "signed_tz_shift": 0,
         "getaway_day": False,
         "cross_timezone": False,
         "penalty_active": False,
@@ -246,13 +254,17 @@ def compute_travel_fatigue_index(
     yesterday_venue = yesterday_game.get("venue_name", "").lower()
     today_venue = today_venue_name.lower()
 
+    signed_shift = 0
     if yesterday_venue and today_venue and yesterday_venue != today_venue:
         tz_yesterday = _venue_tz_offset_hours(yesterday_venue)
         tz_today     = _venue_tz_offset_hours(today_venue)
-        shift = abs(int(tz_yesterday - tz_today))
-        result["tz_shift"] = shift
+        # Signed: positive = moved east (less negative offset), negative = moved west
+        signed_shift = int(round(tz_today - tz_yesterday))
+        result["tz_shift"] = abs(signed_shift)
+        result["signed_tz_shift"] = signed_shift
     else:
         result["tz_shift"] = 0
+        result["signed_tz_shift"] = 0
 
     # ── Evaluate conditions
     getaway = result["rest_hours"] < GETAWAY_REST_THRESHOLD
@@ -262,11 +274,36 @@ def compute_travel_fatigue_index(
     result["getaway_day"]     = getaway
     result["cross_timezone"]  = cross_tz
     result["penalty_active"]  = penalty_active
-    result["penalty_pct"]     = TFI_HUSI_PENALTY_PCT if penalty_active else 0.0
+
+    # ── Merlin Circadian Travel Adjustment: directional penalty
+    # Eastward travel + getaway day = worst case (body most behind local clock)
+    # Westward travel = easiest adjustment (body clock runs ahead locally)
+    if penalty_active:
+        if signed_shift > 0 and getaway:
+            # Eastward + getaway: body clock is behind, early game is hardest
+            penalty_pct = TFI_PENALTY_EASTWARD_GETAWAY
+            direction_label = "EAST_GETAWAY"
+        elif signed_shift < 0:
+            # Westward travel: body adapts better going west
+            penalty_pct = TFI_PENALTY_WESTWARD
+            direction_label = "WEST"
+        else:
+            # Default: same-zone getaway, non-directional cross-TZ, or eastward non-getaway
+            penalty_pct = TFI_PENALTY_DEFAULT
+            direction_label = "DEFAULT"
+    else:
+        penalty_pct = 0.0
+        direction_label = "NONE"
+
+    result["penalty_pct"] = penalty_pct
 
     # Build human-readable label
     if not penalty_active:
         result["tfi_label"] = "RESTED"
+    elif signed_shift > 0 and getaway:
+        result["tfi_label"] = f"EAST_GETAWAY ({result['rest_hours']:.1f}h rest, Δ{result['tz_shift']}hr E) -12%"
+    elif signed_shift < 0 and cross_tz:
+        result["tfi_label"] = f"WEST_CROSS_TZ (Δ{result['tz_shift']}hr W) -4%"
     elif getaway and cross_tz:
         result["tfi_label"] = f"GETAWAY+CROSS_TZ ({result['rest_hours']:.1f}h rest, Δ{result['tz_shift']}hr TZ)"
     elif getaway:
@@ -278,9 +315,12 @@ def compute_travel_fatigue_index(
              team_id=team_id,
              rest_hours=result["rest_hours"],
              tz_shift=result["tz_shift"],
+             signed_tz_shift=signed_shift,
+             direction=direction_label,
              getaway=getaway,
              cross_tz=cross_tz,
              penalty=penalty_active,
+             penalty_pct=penalty_pct,
              label=result["tfi_label"])
 
     return result

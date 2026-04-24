@@ -280,6 +280,21 @@ class ModelOutputDaily(Base):
     park_extreme: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
     park_hits_multiplier: Mapped[Optional[float]] = mapped_column(Float, default=1.0)
 
+    # ── Merlin Simulation Engine outputs (N=2000 Monte Carlo)
+    sim_median_hits: Mapped[Optional[float]] = mapped_column(Float)
+    sim_median_ks: Mapped[Optional[float]] = mapped_column(Float)
+    sim_over_pct_hits: Mapped[Optional[float]] = mapped_column(Float)
+    sim_under_pct_hits: Mapped[Optional[float]] = mapped_column(Float)
+    sim_p5_hits: Mapped[Optional[float]] = mapped_column(Float)
+    sim_p95_hits: Mapped[Optional[float]] = mapped_column(Float)
+    sim_over_pct_ks: Mapped[Optional[float]] = mapped_column(Float)
+    sim_under_pct_ks: Mapped[Optional[float]] = mapped_column(Float)
+    sim_p5_ks: Mapped[Optional[float]] = mapped_column(Float)
+    sim_p95_ks: Mapped[Optional[float]] = mapped_column(Float)
+    sim_confidence_hits: Mapped[Optional[str]] = mapped_column(String(16))
+    sim_confidence_ks: Mapped[Optional[str]] = mapped_column(String(16))
+    sim_kill_streak_prob: Mapped[Optional[float]] = mapped_column(Float)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     game: Mapped["Game"] = relationship(back_populates="outputs")

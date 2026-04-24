@@ -195,6 +195,20 @@ async def pitchers_today(
             risk_flags=primary.risk_flags,
             pff_score=primary.pff_score,
             pff_label=primary.pff_label,
+            # ── Merlin Simulation Engine outputs (N=2000)
+            sim_median_hits=primary.sim_median_hits,
+            sim_median_ks=primary.sim_median_ks,
+            sim_over_pct_hits=primary.sim_over_pct_hits,
+            sim_under_pct_hits=primary.sim_under_pct_hits,
+            sim_p5_hits=primary.sim_p5_hits,
+            sim_p95_hits=primary.sim_p95_hits,
+            sim_over_pct_ks=primary.sim_over_pct_ks,
+            sim_under_pct_ks=primary.sim_under_pct_ks,
+            sim_p5_ks=primary.sim_p5_ks,
+            sim_p95_ks=primary.sim_p95_ks,
+            sim_confidence_hits=primary.sim_confidence_hits,
+            sim_confidence_ks=primary.sim_confidence_ks,
+            sim_kill_streak_prob=primary.sim_kill_streak_prob,
         )
         pitcher_rows.append(row)
 

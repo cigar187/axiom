@@ -204,30 +204,43 @@ def compute_kusi_interaction(
     kop_tto: float,
     ocr_foul: float,
     uks: float,
+    uhs_zone: float = 50.0,
+    pcs_cmd: float = 50.0,
+    per_deep: float = 50.0,
+    ocr_disc: float = 50.0,
+    silent: bool = False,
 ) -> float:
     """
-    Apply KUSI interaction boosts. Returns total boost (capped at 7.0).
+    Apply KUSI interaction boosts. Returns total boost (capped at 9.0).
     Each triggered rule is logged individually.
+
+    Merlin v2.0 additions:
+      Zone Sympathy: UHS_ZONE > 70 AND PCS_CMD > 70 → +4.0 (interactive, not additive)
+      K8 Swing-and-Miss Collision: PER_DEEP > 75 AND OCR_DISC < 40 → +4.0 boost
     """
     boost = 0.0
     name = f.pitcher_name
 
     if ocr > 70 and per_ppa > 65:
         boost += 2.0
-        log.info("KUSI K1 triggered", pitcher=name, ocr=ocr, per_ppa=per_ppa, boost=2.0)
+        if not silent:
+            log.info("KUSI K1 triggered", pitcher=name, ocr=ocr, per_ppa=per_ppa, boost=2.0)
 
     if pmr_put > 70 and f.relies_on_one_putaway:
         boost += 1.5
-        log.info("KUSI K2 triggered", pitcher=name, pmr_put=pmr_put, boost=1.5)
+        if not silent:
+            log.info("KUSI K2 triggered", pitcher=name, pmr_put=pmr_put, boost=1.5)
 
     lineup_disc = _f(f.lineup_discipline_score)
     if lineup_disc > 65 and per_fps > 60:
         boost += 1.5
-        log.info("KUSI K3 triggered", pitcher=name, lineup_disc=lineup_disc, per_fps=per_fps, boost=1.5)
+        if not silent:
+            log.info("KUSI K3 triggered", pitcher=name, lineup_disc=lineup_disc, per_fps=per_fps, boost=1.5)
 
     if kop_hook > 70 and kop_bpen > 70:
         boost += 1.5
-        log.info("KUSI K4 triggered", pitcher=name, kop_hook=kop_hook, kop_bpen=kop_bpen, boost=1.5)
+        if not silent:
+            log.info("KUSI K4 triggered", pitcher=name, kop_hook=kop_hook, kop_bpen=kop_bpen, boost=1.5)
 
     # K5: top-lineup K ability + sportsbook line is above pitcher median K by >= 1.0
     if (
@@ -237,19 +250,42 @@ def compute_kusi_interaction(
         and f.k_line >= f.pitcher_median_ks + 1.0
     ):
         boost += 2.0
-        log.info("KUSI K5 triggered", pitcher=name,
-                 tlr_top4k=tlr_top4k, k_line=f.k_line, pitcher_median_ks=f.pitcher_median_ks, boost=2.0)
+        if not silent:
+            log.info("KUSI K5 triggered", pitcher=name,
+                     tlr_top4k=tlr_top4k, k_line=f.k_line, pitcher_median_ks=f.pitcher_median_ks, boost=2.0)
 
     if kop_tto > 70 and ocr_foul > 65:
         boost += 1.0
-        log.info("KUSI K6 triggered", pitcher=name, kop_tto=kop_tto, ocr_foul=ocr_foul, boost=1.0)
+        if not silent:
+            log.info("KUSI K6 triggered", pitcher=name, kop_tto=kop_tto, ocr_foul=ocr_foul, boost=1.0)
 
     if uks > 65 and f.weak_edge_command:
         boost += 1.0
-        log.info("KUSI K7 triggered", pitcher=name, uks=uks, weak_edge_command=f.weak_edge_command, boost=1.0)
+        if not silent:
+            log.info("KUSI K7 triggered", pitcher=name, uks=uks, weak_edge_command=f.weak_edge_command, boost=1.0)
 
-    capped = min(boost, 7.0)
-    log.info("KUSI interaction total", pitcher=name, raw_boost=boost, capped=capped)
+    # ── Zone Sympathy (Merlin v2.0): same rule as HUSI — umpire zone + pitcher command
+    # are interactive. When both > 70, the umpire is expanding the zone exactly where
+    # the pitcher commands best → more called Ks.
+    if uhs_zone > 70 and pcs_cmd > 70:
+        boost += 4.0
+        if not silent:
+            log.info("KUSI Zone Sympathy triggered", pitcher=name,
+                     uhs_zone=uhs_zone, pcs_cmd=pcs_cmd, boost=4.0)
+
+    # ── K8 Swing-and-Miss Collision (Merlin v2.0):
+    # A pitcher who goes deep into games (PER_DEEP > 75) against a lineup with
+    # poor plate discipline (OCR_DISC < 40) creates a "kill streak" environment.
+    # Batters chase late, the pitcher is comfortable in counts, and K totals surge.
+    if per_deep > 75 and ocr_disc < 40:
+        boost += 4.0
+        if not silent:
+            log.info("KUSI K8 Swing-and-Miss Collision triggered", pitcher=name,
+                     per_deep=per_deep, ocr_disc=ocr_disc, boost=4.0)
+
+    capped = min(boost, 9.0)  # raised cap for new Merlin rules
+    if not silent:
+        log.info("KUSI interaction total", pitcher=name, raw_boost=boost, capped=capped)
     return capped
 
 
@@ -257,7 +293,7 @@ def compute_kusi_interaction(
 # Volatility penalties
 # ─────────────────────────────────────────────────────────────
 
-def compute_kusi_volatility(f: PitcherFeatureSet) -> float:
+def compute_kusi_volatility(f: PitcherFeatureSet, silent: bool = False) -> float:
     """
     Apply KUSI volatility penalties. Returns total penalty (capped at 8.5).
     Each triggered penalty is logged individually.
@@ -267,42 +303,47 @@ def compute_kusi_volatility(f: PitcherFeatureSet) -> float:
 
     if not f.lineup_confirmed:
         penalty += 2.5
-        log.info("KUSI KV1 lineup uncertainty", pitcher=name, penalty=2.5)
+        if not silent:
+            log.info("KUSI KV1 lineup uncertainty", pitcher=name, penalty=2.5)
 
     if not f.umpire_confirmed:
         penalty += 1.0
-        log.info("KUSI KV2 umpire unknown", pitcher=name, penalty=1.0)
+        if not silent:
+            log.info("KUSI KV2 umpire unknown", pitcher=name, penalty=1.0)
 
-    # KV3: stuff volatility — use per_velo variance as proxy;
-    # flagged when per_velo < 40 (low velocity consistency)
     if f.per_velo is not None and f.per_velo < 40:
         penalty += 2.0
-        log.info("KUSI KV3 stuff volatility", pitcher=name, per_velo=f.per_velo, penalty=2.0)
+        if not silent:
+            log.info("KUSI KV3 stuff volatility", pitcher=name, per_velo=f.per_velo, penalty=2.0)
 
     if f.recent_velocity_spike:
         penalty += 1.5
-        log.info("KUSI KV4 velocity spike upside uncertainty", pitcher=name, penalty=1.5)
+        if not silent:
+            log.info("KUSI KV4 velocity spike upside uncertainty", pitcher=name, penalty=1.5)
 
     if f.key_contact_bats_uncertain:
         penalty += 2.0
-        log.info("KUSI KV5 key contact bats resting", pitcher=name, penalty=2.0)
+        if not silent:
+            log.info("KUSI KV5 key contact bats resting", pitcher=name, penalty=2.0)
 
-    # KV6: bullpen depleted longer leash possible — kop_bpen < 35
     if f.kop_bpen is not None and f.kop_bpen < 35:
         penalty += 1.5
-        log.info("KUSI KV6 bullpen depleted", pitcher=name, kop_bpen=f.kop_bpen, penalty=1.5)
+        if not silent:
+            log.info("KUSI KV6 bullpen depleted", pitcher=name, kop_bpen=f.kop_bpen, penalty=1.5)
 
-    # KV7: weather/rain timing — ens_windin < 35 or temp extreme (< 42°F)
     if f.ens_windin is not None and f.ens_windin < 35:
         penalty += 1.5
-        log.info("KUSI KV7 rain/weather timing uncertainty", pitcher=name, ens_windin=f.ens_windin, penalty=1.5)
+        if not silent:
+            log.info("KUSI KV7 rain/weather timing uncertainty", pitcher=name, ens_windin=f.ens_windin, penalty=1.5)
 
     if f.opponent_boom_bust_volatility:
         penalty += 1.5
-        log.info("KUSI KV8 opponent boom-bust K volatility", pitcher=name, penalty=1.5)
+        if not silent:
+            log.info("KUSI KV8 opponent boom-bust K volatility", pitcher=name, penalty=1.5)
 
     capped = min(penalty, 8.5)
-    log.info("KUSI volatility total", pitcher=name, raw_penalty=penalty, capped=capped)
+    if not silent:
+        log.info("KUSI volatility total", pitcher=name, raw_penalty=penalty, capped=capped)
     return capped
 
 
@@ -333,16 +374,21 @@ def kusi_grade(score: float) -> str:
 # Main KUSI computation
 # ─────────────────────────────────────────────────────────────
 
-def compute_kusi(f: PitcherFeatureSet) -> dict:
+def compute_kusi(f: PitcherFeatureSet, silent: bool = False) -> dict:
     """
     Compute the full KUSI score for one pitcher on one game day.
+
+    Args:
+        f:      Pitcher feature set.
+        silent: If True, suppress all logging. Used by SimulationEngine for 2000-iteration speed.
 
     Returns a dict with:
       kusi_base, kusi_interaction, kusi_volatility, kusi, grade,
       projected_ks, base_ks,
       all individual block scores for database logging.
     """
-    log.info("KUSI computation starting", pitcher=f.pitcher_name, game_id=f.game_id)
+    if not silent:
+        log.info("KUSI computation starting", pitcher=f.pitcher_name, game_id=f.game_id)
 
     # ── Block scores
     ocr = score_ocr(f)
@@ -352,10 +398,11 @@ def compute_kusi(f: PitcherFeatureSet) -> dict:
     uks = score_uks(f)
     tlr = score_tlr(f)
 
-    log.info("KUSI block scores",
-             pitcher=f.pitcher_name,
-             OCR=round(ocr, 2), PMR=round(pmr, 2), PER=round(per, 2),
-             KOP=round(kop, 2), UKS=round(uks, 2), TLR=round(tlr, 2))
+    if not silent:
+        log.info("KUSI block scores",
+                 pitcher=f.pitcher_name,
+                 OCR=round(ocr, 2), PMR=round(pmr, 2), PER=round(per, 2),
+                 KOP=round(kop, 2), UKS=round(uks, 2), TLR=round(tlr, 2))
 
     # ── Base formula
     kusi_base = (
@@ -366,9 +413,10 @@ def compute_kusi(f: PitcherFeatureSet) -> dict:
         0.10 * uks +
         0.08 * tlr
     )
-    log.info("KUSI base", pitcher=f.pitcher_name, kusi_base=round(kusi_base, 2))
+    if not silent:
+        log.info("KUSI base", pitcher=f.pitcher_name, kusi_base=round(kusi_base, 2))
 
-    # ── Interaction boosts
+    # ── Interaction boosts (includes Zone Sympathy and K8 from Merlin v2.0)
     interaction = compute_kusi_interaction(
         f=f,
         ocr=ocr,
@@ -381,71 +429,63 @@ def compute_kusi(f: PitcherFeatureSet) -> dict:
         kop_tto=_f(f.kop_tto),
         ocr_foul=_f(f.ocr_foul),
         uks=uks,
+        uhs_zone=_f(f.uhs_zone),
+        pcs_cmd=_f(f.pcs_cmd),
+        per_deep=_f(f.per_deep),
+        ocr_disc=_f(f.ocr_disc),
+        silent=silent,
     )
 
     # ── Volatility penalties
-    volatility = compute_kusi_volatility(f)
+    volatility = compute_kusi_volatility(f, silent=silent)
 
     # ── Final KUSI (pre-bullpen)
     kusi_raw = kusi_base + interaction - volatility
     kusi_pre = clamp(kusi_raw)
 
     # ── Bullpen Fatigue Adjustment
-    # Tired own bullpen = harder to preserve a lead = starter K opportunity goes DOWN.
-    # Formula: Final_KUSI = Base_KUSI × (1 - BFS_own)
     from app.utils.bullpen import apply_bullpen_to_kusi
     kusi = apply_bullpen_to_kusi(kusi_pre, f.bullpen_fatigue_own)
     bullpen_adjustment = round(kusi - kusi_pre, 2)
 
     # ── Catcher Framing adjustment (SKU #37)
-    # An elite-framing catcher steals borderline strikes → more called Ks for the pitcher.
-    # Rule: catcher_kusi_adj = +0.04 (elite), 0.0 (avg), or -0.02 (poor framer).
-    # Formula: KUSI_framing = KUSI × (1 + catcher_kusi_adj)
     kusi_pre_framing = kusi
     if f.catcher_kusi_adj != 0.0:
         kusi = kusi * (1.0 + f.catcher_kusi_adj)
         kusi = round(max(0.0, min(kusi, 100.0)), 2)
-        log.info("KUSI catcher framing adjustment applied",
-                 pitcher=f.pitcher_name,
-                 catcher=f.catcher_name,
-                 strike_rate=f.catcher_strike_rate,
-                 framing_label=f.catcher_framing_label,
-                 kusi_adj=f.catcher_kusi_adj,
-                 kusi_before=round(kusi_pre_framing, 2),
-                 kusi_after=round(kusi, 2))
+        if not silent:
+            log.info("KUSI catcher framing adjustment applied",
+                     pitcher=f.pitcher_name,
+                     catcher=f.catcher_name,
+                     strike_rate=f.catcher_strike_rate,
+                     framing_label=f.catcher_framing_label,
+                     kusi_adj=f.catcher_kusi_adj,
+                     kusi_before=round(kusi_pre_framing, 2),
+                     kusi_after=round(kusi, 2))
 
     # ── Extension / Perceived Velocity boost (SKU #38)
-    # Elite extension (> 6.8 ft) means the ball arrives sooner than the hitter expects.
-    # This effectively adds +1.5 mph of "perceived velocity," boosting strikeout odds.
-    # We apply this as a small KUSI score nudge (extension_velo_boost already encoded in per_velo).
-    # The per_velo field in the feature set is boosted in feature_builder; this is the
-    # final confirmation log only.
-    if f.extension_elite:
+    if f.extension_elite and not silent:
         log.info("KUSI extension elite (perceived velo boost already applied in per_velo)",
                  pitcher=f.pitcher_name,
                  extension_ft=f.extension_ft)
 
     grade = kusi_grade(kusi)
-    log.info("KUSI final",
-             pitcher=f.pitcher_name,
-             kusi_base=round(kusi_base, 2),
-             interaction=round(interaction, 2),
-             volatility=round(volatility, 2),
-             kusi_pre_bullpen=round(kusi_pre, 2),
-             bullpen_bfs=f.bullpen_fatigue_own,
-             bullpen_label=f.bullpen_label_own,
-             bullpen_adjustment=bullpen_adjustment,
-             catcher=f.catcher_name,
-             catcher_framing=f.catcher_framing_label,
-             kusi=round(kusi, 2),
-             grade=grade)
+    if not silent:
+        log.info("KUSI final",
+                 pitcher=f.pitcher_name,
+                 kusi_base=round(kusi_base, 2),
+                 interaction=round(interaction, 2),
+                 volatility=round(volatility, 2),
+                 kusi_pre_bullpen=round(kusi_pre, 2),
+                 bullpen_bfs=f.bullpen_fatigue_own,
+                 bullpen_label=f.bullpen_label_own,
+                 bullpen_adjustment=bullpen_adjustment,
+                 catcher=f.catcher_name,
+                 catcher_framing=f.catcher_framing_label,
+                 kusi=round(kusi, 2),
+                 grade=grade)
 
     # ── Projected strikeouts (MGS-aware)
-    # 1. Scale K/9 to the pitcher's realistic expected IP window.
-    # 2. Apply the base KUSI adjustment (higher score = fewer Ks).
-    # 3. Apply MGS — the TTO curve causes K rates to DROP as batters see the
-    #    pitcher more times. The same surge that produces extra hits in innings
-    #    4-6 means batters are more patient and making more contact.
     exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years)
     safe_k_per_9 = min(f.season_k_per_9 or 8.0, 15.0)
     base_ks = safe_k_per_9 * (exp_ip / 9.0)
@@ -460,18 +500,21 @@ def compute_kusi(f: PitcherFeatureSet) -> dict:
         pff_ks_tto1_mult=f.pff_ks_tto1_mult,
         pff_tto_late_boost=f.pff_tto_late_boost,
         pff_label=f.pff_label,
+        baserunners_l2=f.baserunners_l2_innings,
+        silent=silent,
     )
     projected_ks = projected_ks * mgs_ks_mult
-    projected_ks = max(0.0, min(projected_ks, 15.0))  # hard cap: no starter fans 15+ in reality
+    projected_ks = max(0.0, min(projected_ks, 15.0))
 
-    log.info("KUSI projection",
-             pitcher=f.pitcher_name,
-             exp_ip=exp_ip,
-             ip_tier=ip_tier_label(exp_ip),
-             base_ks=round(base_ks, 2),
-             mgs_ks_mult=round(mgs_ks_mult, 3),
-             mgs_label=mgs_label,
-             projected_ks=round(projected_ks, 2))
+    if not silent:
+        log.info("KUSI projection",
+                 pitcher=f.pitcher_name,
+                 exp_ip=exp_ip,
+                 ip_tier=ip_tier_label(exp_ip),
+                 base_ks=round(base_ks, 2),
+                 mgs_ks_mult=round(mgs_ks_mult, 3),
+                 mgs_label=mgs_label,
+                 projected_ks=round(projected_ks, 2))
 
     return {
         "kusi": round(kusi, 2),

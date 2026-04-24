@@ -30,6 +30,12 @@ Pitch count fatigue further amplifies TTO2 and TTO3 effects:
     PC 81-95: × 1.18   laboring — clear command erosion
     PC 96+:   × 1.32   running on fumes — high blowup risk
 
+TTO3 "Death Trap" (Merlin v2.0):
+    If Inning ≥ 6 AND Baserunners in last 2 innings > 2,
+    the hits multiplier escalates from 1.38× to 1.85×.
+    This captures the non-linear collapse that Statcast shows when
+    a pitcher re-faces a lineup with baserunner traffic still on.
+
 Usage
 ─────
 Pre-game (no live state):
@@ -38,9 +44,13 @@ Pre-game (no live state):
 Live (inning + pitch count known):
     hits_mult, ks_mult, label = compute_mgs(exp_ip, current_inning=6, current_pitch_count=91)
 
+Simulation (pre-game with stochastic baserunners):
+    hits_mult, ks_mult, label = compute_mgs(exp_ip, baserunners_l2=3)
+
 Returns a multiplier > 1.0 when the surge effect is working AGAINST the pitcher
 (more hits expected / fewer Ks expected). Returns < 1.0 when pitcher is early/fresh.
 """
+from typing import Optional
 from app.utils.logging import get_logger
 
 log = get_logger("mgs")
@@ -51,6 +61,13 @@ TTO_HIT_MULT = {
     2: 1.12,   # innings 4-5: batter recognition kicks in
     3: 1.38,   # innings 6+:  full surge — bats are hot
 }
+
+# ── Death Trap multiplier (Merlin v2.0)
+# Fires when pitcher is in TTO3 territory AND there are heavy baserunners.
+# Research basis: pitchers with WHIP > 1.5 in 6th inning face dramatically
+# worse outcomes when they've been leaving runners on base all game.
+TTO3_DEATH_TRAP_MULT = 1.85    # replaces 1.38 when baserunner condition fires
+TTO3_DEATH_TRAP_THRESHOLD = 2  # baserunners in last 2 innings to trigger death trap
 
 # ── TTO strikeout-rate multipliers (inverse relationship to hits)
 TTO_K_MULT = {
@@ -121,6 +138,8 @@ def compute_mgs(
     pff_ks_tto1_mult: float = 1.18,
     pff_tto_late_boost: float = 0.0,
     pff_label: str = "NEUTRAL",
+    baserunners_l2: Optional[float] = None,
+    silent: bool = False,
 ) -> tuple[float, float, str]:
     """
     Compute the Mid-Game Surge multipliers for hits and strikeouts.
@@ -135,6 +154,10 @@ def compute_mgs(
                              Positive = steeper TTO curve (HOT pitcher gets shelled harder later).
                              Negative = flatter curve (COLD pitcher already getting hit).
         pff_label:           Human-readable PFF tier (for logging).
+        baserunners_l2:      Baserunners in the last 2 innings. When > 2 and pitcher is in
+                             TTO3 territory, activates the Death Trap (1.38 → 1.85×).
+                             In simulation mode this is a stochastic Poisson sample per iteration.
+        silent:              If True, suppress all logging (used by SimulationEngine for speed).
 
     Returns:
         (hits_mult, ks_mult, label)
@@ -157,6 +180,17 @@ def compute_mgs(
     k_tto2 = TTO_K_MULT[2] / (1.0 + pff_tto_late_boost) if pff_tto_late_boost > 0 else TTO_K_MULT[2]
     k_tto3 = TTO_K_MULT[3] / (1.0 + pff_tto_late_boost) if pff_tto_late_boost > 0 else TTO_K_MULT[3]
 
+    # ── TTO3 "Death Trap" (Merlin v2.0)
+    # When a pitcher enters TTO3 territory with heavy baserunner traffic in the last 2 innings,
+    # the hit surge jumps from 1.38× to 1.85× — a non-linear collapse that's under-modeled
+    # by flat TTO rates.
+    death_trap_active = (
+        baserunners_l2 is not None
+        and baserunners_l2 > TTO3_DEATH_TRAP_THRESHOLD
+    )
+    if death_trap_active:
+        h_tto3 = TTO3_DEATH_TRAP_MULT * (1.0 + pff_tto_late_boost)
+
     if live_mode:
         # ── LIVE MODE: pitcher is in-game — compute exactly for current inning
         tto = _tto_from_inning(current_inning)
@@ -177,14 +211,19 @@ def compute_mgs(
 
         in_surge = tto == 3 or (tto == 2 and current_pitch_count >= 80)
         label = _mgs_label(hits_mult, in_surge)
+        if death_trap_active and tto == 3:
+            label = "DEATH_TRAP"
 
-        log.info("MGS live",
-                 inning=current_inning, pitch_count=current_pitch_count,
-                 tto=tto, pc_amp=round(pc_amp, 3),
-                 pff=pff_label,
-                 hits_mult=round(hits_mult, 3),
-                 ks_mult=round(ks_mult, 3),
-                 label=label)
+        if not silent:
+            log.info("MGS live",
+                     inning=current_inning, pitch_count=current_pitch_count,
+                     tto=tto, pc_amp=round(pc_amp, 3),
+                     pff=pff_label,
+                     baserunners_l2=baserunners_l2,
+                     death_trap=death_trap_active and tto == 3,
+                     hits_mult=round(hits_mult, 3),
+                     ks_mult=round(ks_mult, 3),
+                     label=label)
 
     else:
         # ── PRE-GAME MODE: distribute expected IP across TTO tiers
@@ -202,7 +241,7 @@ def compute_mgs(
         hits_total = (
             tto1_ip * h_tto1 +
             tto2_ip * h_tto2 * pcf2 +
-            tto3_ip * h_tto3 * pcf3
+            tto3_ip * h_tto3 * pcf3  # h_tto3 already elevated if death trap active
         )
         ks_total = (
             tto1_ip * k_tto1 +
@@ -213,19 +252,24 @@ def compute_mgs(
         hits_mult = hits_total / exp_ip
         ks_mult   = ks_total / exp_ip
 
-        hits_mult = max(0.60, min(hits_mult, 1.90))
+        hits_mult = max(0.60, min(hits_mult, 2.00))  # raised cap for death trap scenario
         ks_mult   = max(0.45, min(ks_mult, 1.50))
 
         in_surge = tto3_ip > 0.5
         label = _mgs_label(hits_mult, in_surge)
+        if death_trap_active and tto3_ip > 0.5:
+            label = "DEATH_TRAP"
 
-        log.info("MGS pre-game",
-                 exp_ip=exp_ip, pff=pff_label,
-                 tto1_ip=round(tto1_ip, 2), tto2_ip=round(tto2_ip, 2), tto3_ip=round(tto3_ip, 2),
-                 h_tto1=round(h_tto1, 3), h_tto2=round(h_tto2, 3), h_tto3=round(h_tto3, 3),
-                 pff_late_boost=pff_tto_late_boost,
-                 hits_mult=round(hits_mult, 3),
-                 ks_mult=round(ks_mult, 3),
-                 label=label)
+        if not silent:
+            log.info("MGS pre-game",
+                     exp_ip=exp_ip, pff=pff_label,
+                     tto1_ip=round(tto1_ip, 2), tto2_ip=round(tto2_ip, 2), tto3_ip=round(tto3_ip, 2),
+                     h_tto1=round(h_tto1, 3), h_tto2=round(h_tto2, 3), h_tto3=round(h_tto3, 3),
+                     pff_late_boost=pff_tto_late_boost,
+                     baserunners_l2=baserunners_l2,
+                     death_trap=death_trap_active,
+                     hits_mult=round(hits_mult, 3),
+                     ks_mult=round(ks_mult, 3),
+                     label=label)
 
     return round(hits_mult, 4), round(ks_mult, 4), label

@@ -23,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.core.features import PitcherFeatureSet
 from app.core.husi import compute_husi
 from app.core.kusi import compute_kusi
+from app.core.simulation import SimulationEngine
 from app.models.models import (
     Game, ProbablePitcher, SportsbookProp,
     PitcherFeaturesDaily, ModelOutputDaily, UmpireProfile,
@@ -382,6 +383,8 @@ async def run_daily_pipeline(
                 travel_fatigue=tfi_by_team.get(str(own_team_id), {}),
                 vaa_data=vaa_by_pitcher.get(pid, {}),
             )
+            # Stamp the numeric team_id so the simulation can find the manager profile
+            features.team_id_numeric = str(own_team_id)
 
             husi_result = compute_husi(features)
             kusi_result = compute_kusi(features)
@@ -420,6 +423,29 @@ async def run_daily_pipeline(
             "dry_run": dry_run,
             "elapsed_seconds": time.monotonic() - start_time,
         }
+
+    # ─────────────────────────────────────────────────────────
+    # Step 5b: Merlin Probabilistic Simulation (N=2000)
+    # Runs AFTER all pitchers are scored so each scorer gets a fresh
+    # feature set with fully populated prop lines, park factors, etc.
+    # Each pitcher gets 2,000 Monte Carlo iterations with Gaussian jitter
+    # on PCS_CMD, OCR_DISC, and ENS_TEMP.
+    # ─────────────────────────────────────────────────────────
+    sim_engine = SimulationEngine()
+    for result in scored_pitchers:
+        features: PitcherFeatureSet = result["features"]
+        try:
+            sim_result = sim_engine.run(
+                features=features,
+                hits_line=features.hits_line,
+                k_line=features.k_line,
+            )
+            result["sim"] = sim_result
+        except Exception as exc:
+            log.warning("Simulation failed for pitcher (non-fatal)",
+                        pitcher=features.pitcher_name, error=str(exc))
+            result["sim"] = None
+    log.info("Merlin simulation complete", pitchers=len(scored_pitchers))
 
     # ─────────────────────────────────────────────────────────
     # Step 6: Save to database
@@ -601,6 +627,7 @@ async def _persist_results(
         features: PitcherFeatureSet = result["features"]
         husi_r = result["husi"]
         kusi_r = result["kusi"]
+        sim_r = result.get("sim")  # SimulationResult or None
         name_key = features.pitcher_name.strip().lower()
         pitcher_props = props.get(name_key, {})
 
@@ -682,6 +709,20 @@ async def _persist_results(
                 season_era_tier=features.season_era_tier,
                 park_extreme=features.park_extreme,
                 park_hits_multiplier=features.park_hits_multiplier,
+                # ── Merlin Simulation outputs (N=2000)
+                sim_median_hits=sim_r.median_hits if sim_r else None,
+                sim_median_ks=sim_r.median_ks if sim_r else None,
+                sim_over_pct_hits=sim_r.over_pct_hits if sim_r else None,
+                sim_under_pct_hits=sim_r.under_pct_hits if sim_r else None,
+                sim_p5_hits=sim_r.p5_hits if sim_r else None,
+                sim_p95_hits=sim_r.p95_hits if sim_r else None,
+                sim_over_pct_ks=sim_r.over_pct_ks if sim_r else None,
+                sim_under_pct_ks=sim_r.under_pct_ks if sim_r else None,
+                sim_p5_ks=sim_r.p5_ks if sim_r else None,
+                sim_p95_ks=sim_r.p95_ks if sim_r else None,
+                sim_confidence_hits=sim_r.sim_confidence_hits if sim_r else None,
+                sim_confidence_ks=sim_r.sim_confidence_ks if sim_r else None,
+                sim_kill_streak_prob=sim_r.kill_streak_probability if sim_r else None,
             ).on_conflict_do_update(
                 constraint="uq_output_pitcher_game_market",
                 set_={
@@ -703,6 +744,20 @@ async def _persist_results(
                     "season_era_tier": features.season_era_tier,
                     "park_extreme": features.park_extreme,
                     "park_hits_multiplier": features.park_hits_multiplier,
+                    # ── Simulation columns update on conflict
+                    "sim_median_hits": sim_r.median_hits if sim_r else None,
+                    "sim_median_ks": sim_r.median_ks if sim_r else None,
+                    "sim_over_pct_hits": sim_r.over_pct_hits if sim_r else None,
+                    "sim_under_pct_hits": sim_r.under_pct_hits if sim_r else None,
+                    "sim_p5_hits": sim_r.p5_hits if sim_r else None,
+                    "sim_p95_hits": sim_r.p95_hits if sim_r else None,
+                    "sim_over_pct_ks": sim_r.over_pct_ks if sim_r else None,
+                    "sim_under_pct_ks": sim_r.under_pct_ks if sim_r else None,
+                    "sim_p5_ks": sim_r.p5_ks if sim_r else None,
+                    "sim_p95_ks": sim_r.p95_ks if sim_r else None,
+                    "sim_confidence_hits": sim_r.sim_confidence_hits if sim_r else None,
+                    "sim_confidence_ks": sim_r.sim_confidence_ks if sim_r else None,
+                    "sim_kill_streak_prob": sim_r.kill_streak_probability if sim_r else None,
                 },
             )
             await db.execute(stmt)
