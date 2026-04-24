@@ -316,8 +316,8 @@ async def run_daily_pipeline(
                              tz_shift=tfi["tz_shift"])
             except Exception as exc:
                 log.warning("TFI fetch failed, neutral", team_id=tid, error=str(exc))
-                tfi_by_team[tid] = {"rest_hours": 24.0, "tz_shift": 0, "penalty_pct": 0.0,
-                                    "tfi_label": "NO DATA", "penalty_active": False}
+                tfi_by_team[tid] = {"rest_hours": 24.0, "tz_shift": 0, "signed_tz_shift": 0,
+                                    "penalty_pct": 0.0, "tfi_label": "NO DATA", "penalty_active": False}
     log.info("Travel & Fatigue Index fetched", teams=len(tfi_by_team))
 
     # ─────────────────────────────────────────────────────────

@@ -522,7 +522,7 @@ def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
     husi_pre_tfi = husi
     husi = apply_tfi_to_husi(husi, f.tfi_penalty_pct)
     tfi_adjustment = round(husi - husi_pre_tfi, 2)
-    if f.tfi_penalty_pct > 0:
+    if not silent and f.tfi_penalty_pct > 0:
         log.info("HUSI TFI penalty applied",
                  pitcher=f.pitcher_name,
                  tfi_label=f.tfi_label,

@@ -562,12 +562,13 @@ def build_features(
     # hits early. Penalty reduces HUSI when triggered.
     tf = travel_fatigue or {}
     if tf:
-        f.tfi_rest_hours    = tf.get("rest_hours", 24.0)
-        f.tfi_tz_shift      = tf.get("tz_shift", 0)
-        f.tfi_getaway_day   = tf.get("getaway_day", False)
-        f.tfi_cross_timezone = tf.get("cross_timezone", False)
-        f.tfi_penalty_pct   = tf.get("penalty_pct", 0.0)
-        f.tfi_label         = tf.get("tfi_label", "NO DATA")
+        f.tfi_rest_hours       = tf.get("rest_hours", 24.0)
+        f.tfi_tz_shift         = tf.get("tz_shift", 0)           # absolute delta for display
+        f.tfi_signed_tz_shift  = tf.get("signed_tz_shift", 0)    # signed: + east, - west
+        f.tfi_getaway_day      = tf.get("getaway_day", False)
+        f.tfi_cross_timezone   = tf.get("cross_timezone", False)
+        f.tfi_penalty_pct      = tf.get("penalty_pct", 0.0)      # already directional (Merlin)
+        f.tfi_label            = tf.get("tfi_label", "NO DATA")
 
         # Also update ops_fat — days rest / fatigue score feeds the OPS block
         rest_hours = f.tfi_rest_hours
@@ -591,17 +592,25 @@ def build_features(
                      penalty=f.tfi_penalty_pct)
 
     # ── SKU #38 — VAA & Extension Perceived Velocity
-    # VAA < -4.5° → "flat" approach angle → ball easier to track → +10% contact.
-    # Extension > 6.8 ft → pitcher releases closer to home plate → +1.5 mph perceived.
+    # VAA > -4.5° = flat trajectory (less steep, closer to 0) → hitter tracks easier → +10% contact.
+    # VAA < -4.5° = steep descent (like a curveball drop) → harder to track.
+    # Extension > 6.8 ft → pitcher releases closer to home plate → +1.5 mph perceived velocity.
+    #
+    # Merlin v2.0 VAA Elevation override: if flat (VAA > -4.5) AND pitch thrown high
+    # in zone (pitch_location_high_pct > 60%), the flat+high combination produces pop-ups
+    # rather than hard contact — REVERSE to suppression boost. Applied in husi.py.
     vd = vaa_data or {}
     if vd:
         vaa  = vd.get("vaa_degrees")
         ext  = vd.get("extension_ft")
         f.vaa_degrees    = vaa
         f.extension_ft   = ext
+        # pitch_location_high_pct: % of pitches in upper zone (from live Statcast feed)
+        # If not available from the live feed, defaults to None → elevation override skips.
+        f.pitch_location_high_pct = vd.get("pitch_location_high_pct")
 
-        # VAA flat penalty: ball approaching less steeply = hitter tracks easier = more contact
-        if vaa is not None and vaa < -4.5:
+        # VAA flat: greater than -4.5° (less negative) = flatter trajectory = easier to track
+        if vaa is not None and vaa > -4.5:
             f.vaa_flat           = True
             f.vaa_contact_penalty = 0.10
         else:

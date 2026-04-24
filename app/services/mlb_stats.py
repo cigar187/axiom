@@ -1063,7 +1063,7 @@ class MLBStatsAdapter(BaseProvider):
         For pre-game / completed games: returns empty dict (no VAA adjustment applied).
 
         VAA = atan2((plate_z - release_z), -(60.5 - extension)) × (180/π)
-        A flat VAA (< -4.5° per user spec) → easier to track → +10% contact probability.
+        A flat VAA (> -4.5°, i.e. less steep) → easier to track → +10% contact probability.
         Extension > 6.8 ft → +1.5 mph perceived velocity → boosts per_velo.
 
         Returns:

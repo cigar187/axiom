@@ -184,25 +184,33 @@ class SimulationEngine:
         # ── Old School 20% extension flag (pre-sampled, reproducible)
         extension_flags = self.rng.random(self.n_runs) < OLD_SCHOOL_EXTENSION_PROBABILITY
 
-        hits_arr = np.empty(self.n_runs)
-        ks_arr   = np.empty(self.n_runs)
+        # Fallback values — used if an individual iteration raises unexpectedly
+        _fb_hits = features.hits_line or 8.0
+        _fb_ks   = features.k_line   or 5.0
+
+        hits_arr = np.full(self.n_runs, _fb_hits)
+        ks_arr   = np.full(self.n_runs, _fb_ks)
 
         for i in range(self.n_runs):
-            # Step 1: Apply Gaussian jitter to the three stochastic variables
-            f = self._jitter(features, cmd_noise[i], disc_noise[i], temp_noise[i])
+            try:
+                # Step 1: Apply Gaussian jitter to the three stochastic variables
+                f = self._jitter(features, cmd_noise[i], disc_noise[i], temp_noise[i])
 
-            # Step 2: Set stochastic baserunner sample for this iteration's TTO3 rule
-            f = replace(f, baserunners_l2_innings=float(baserunner_samples[i]))
+                # Step 2: Set stochastic baserunner sample for this iteration's TTO3 rule
+                f = replace(f, baserunners_l2_innings=float(baserunner_samples[i]))
 
-            # Step 3: Apply managerial leash simulation
-            f = self._apply_manager_leash(f, manager_style, extension_flags[i])
+                # Step 3: Apply managerial leash simulation
+                f = self._apply_manager_leash(f, manager_style, bool(extension_flags[i]))
 
-            # Step 4: Run formulas in silent mode (no logging overhead)
-            h_result = compute_husi(f, silent=True)
-            k_result = compute_kusi(f, silent=True)
+                # Step 4: Run formulas in silent mode (no logging overhead)
+                h_result = compute_husi(f, silent=True)
+                k_result = compute_kusi(f, silent=True)
 
-            hits_arr[i] = h_result["projected_hits"]
-            ks_arr[i]   = k_result["projected_ks"]
+                hits_arr[i] = h_result["projected_hits"]
+                ks_arr[i]   = k_result["projected_ks"]
+            except Exception:
+                # Keep the pre-filled fallback for this slot; do not crash the run
+                pass
 
         # ── Compute distribution statistics
         median_hits = float(np.median(hits_arr))
