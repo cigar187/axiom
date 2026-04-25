@@ -67,9 +67,13 @@ class MLBStatsAdapter(BaseProvider):
               "season_hits_per_9": float,
               "season_k_per_9": float,
               "season_era": float,
-              "season_gb_pct": float,
+              "season_go_ao": float,       # raw GO/AO ratio — preserved for z-score normalization
+              "season_gb_pct": float,      # starts as GO/AO ratio, overridden by Statcast real GB%
               "season_bb_per_9": float,
               "season_k_pct": float,
+              "season_swstr_pct": float,   # swinging strike rate (from Statcast)
+              "season_hard_hit_pct": float, # hard-hit rate (from Statcast)
+              "avg_ip_per_start": float,
               "bullpen_logs": [...],
             }
           },
@@ -219,9 +223,14 @@ class MLBStatsAdapter(BaseProvider):
                     "season_hits_per_9": None,
                     "season_k_per_9": None,
                     "season_era": None,
-                    "season_gb_pct": None,
+                    "season_go_ao": None,           # GO/AO ratio — never overwritten, used for z-score
+                    "season_gb_pct": None,          # starts as GO/AO ratio, Statcast overrides with real GB%
                     "season_bb_per_9": None,
                     "season_k_pct": None,
+                    "season_swstr_pct": None,
+                    "season_hard_hit_pct": None,
+                    "avg_ip_per_start": None,       # populated by _bulk_fetch_season_stats
+                    "mlb_service_years": None,      # tier fallback when avg_ip unavailable
                     "bullpen_logs": [],
                 }
                 found_any = True
@@ -275,9 +284,12 @@ class MLBStatsAdapter(BaseProvider):
                             "season_hits_per_9": None,
                             "season_k_per_9": None,
                             "season_era": None,
+                            "season_go_ao": None,
                             "season_gb_pct": None,
                             "season_bb_per_9": None,
                             "season_k_pct": None,
+                            "season_swstr_pct": None,
+                            "season_hard_hit_pct": None,
                             "avg_ip_per_start": None,
                             "mlb_service_years": None,
                             "bullpen_logs": [],
@@ -317,7 +329,13 @@ class MLBStatsAdapter(BaseProvider):
                             pitchers[pid]["season_hits_per_9"] = self._safe_float(stat.get("hitsPer9Inn"))
                             pitchers[pid]["season_bb_per_9"] = self._safe_float(stat.get("walksPer9Inn"))
                             pitchers[pid]["season_k_pct"] = self._safe_float(stat.get("strikeoutPercentage"))
-                            pitchers[pid]["season_gb_pct"] = self._safe_float(stat.get("groundOutsToAirouts"))
+                            go_ao = self._safe_float(stat.get("groundOutsToAirouts"))
+                            # season_go_ao: always the raw GO/AO ratio (0.5-2.5) — NEVER overwritten
+                            # Used for pcs_gb z-score normalization (stable scale, all pitchers have it)
+                            pitchers[pid]["season_go_ao"] = go_ao
+                            # season_gb_pct: starts as GO/AO ratio, gets OVERRIDDEN by Statcast real GB%
+                            # Used for HUSI GB suppressor (auto-detects % vs ratio scale)
+                            pitchers[pid]["season_gb_pct"] = go_ao
 
                             # ── IP window: compute avg IP per start this season
                             raw_ip = self._safe_float(stat.get("inningsPitched"))  # total IP as float
@@ -416,6 +434,8 @@ class MLBStatsAdapter(BaseProvider):
                                 "k_per_pa": round(k / pa * 100, 2) if pa else 20.0,
                                 "bb_rate": round(bb / pa * 100, 2) if pa else 8.0,
                                 "avg": self._safe_float(stat.get("avg")) or 0.250,
+                                "obp": self._safe_float(stat.get("obp")) or 0.320,
+                                "slg": self._safe_float(stat.get("slg")) or 0.400,
                                 "ab": ab,
                             })
                         except Exception as exc2:
@@ -425,7 +445,8 @@ class MLBStatsAdapter(BaseProvider):
                                 "batter_id": str(bid), "name": name,
                                 "batting_order": batting_order,
                                 "k_rate": 20.0, "k_per_pa": 20.0,
-                                "bb_rate": 8.0, "avg": 0.250, "ab": 0,
+                                "bb_rate": 8.0, "avg": 0.250,
+                                "obp": 0.320, "slg": 0.400, "ab": 0,
                             })
 
                 await asyncio.gather(*[fetch_batter(bid, i) for i, bid in enumerate(batters[:9])])

@@ -2,44 +2,46 @@
 # ─────────────────────────────────────────────────────────────
 # Axiom — Google Cloud Run deployment script
 # Project:  axiom-gtmvelo
-# Service:  axiom-engine
+# Service:  axiom-api
 # Region:   us-central1
+#
+# Usage: ./deploy.sh
+#
+# Always use THIS script — never run gcloud run deploy directly.
+# The raw gcloud command skips env vars and Cloud SQL, which
+# causes the container to crash at startup (pydantic validation).
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── Required environment variables — must be set before running this script
-# Load from .env if it exists, otherwise these must be set in your shell
+# ── Load .env if it exists (local dev / CI)
 if [ -f .env ]; then
   export $(grep -v '^#' .env | xargs)
 fi
 
-# Validate required vars
+# ── Validate required vars
 : "${DATABASE_URL:?DATABASE_URL must be set}"
 : "${RUNDOWN_API_KEY:?RUNDOWN_API_KEY must be set}"
 : "${AXIOM_INTERNAL_TOKEN:?AXIOM_INTERNAL_TOKEN must be set}"
 : "${CLOUD_SQL_INSTANCE:?CLOUD_SQL_INSTANCE must be set}"
 
-PROJECT="axiom-gtmvelo"
-REGION="us-central1"
-SERVICE="axiom-engine"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${SERVICE}/${SERVICE}"
+PROJECT="${GCLOUD_PROJECT:-axiom-gtmvelo}"
+REGION="${GCLOUD_REGION:-us-central1}"
+SERVICE="axiom-api"
 
-echo "==> Building Docker image via Cloud Build (no local Docker required)..."
-gcloud builds submit \
-  --tag "${IMAGE}:latest" \
-  --project "${PROJECT}" \
-  .
-
-echo "==> Deploying to Cloud Run (service: ${SERVICE}, project: ${PROJECT}, region: ${REGION})..."
+echo "==> Deploying Axiom to Cloud Run"
+echo "    Project : ${PROJECT}"
+echo "    Service : ${SERVICE}"
+echo "    Region  : ${REGION}"
+echo ""
 
 gcloud run deploy "${SERVICE}" \
-  --image "${IMAGE}:latest" \
+  --source . \
   --project "${PROJECT}" \
   --region "${REGION}" \
   --platform managed \
   --allow-unauthenticated \
   --port 8080 \
-  --memory 512Mi \
+  --memory 1Gi \
   --cpu 1 \
   --min-instances 0 \
   --max-instances 10 \

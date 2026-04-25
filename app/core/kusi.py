@@ -13,7 +13,7 @@ Formula implemented exactly as specified:
   UKS = 0.34*TIGHT + 0.26*CSTRL + 0.22*2EXP + 0.18*COUNT
   TLR = 0.35*TOP4K + 0.30*TOP6C + 0.20*VET + 0.15*TOP2
 
-Interaction boosts (capped at 7.0):
+Interaction boosts (capped at 9.0 — raised for Merlin v2.0 Zone Sympathy and K8 rules):
   K1: OCR > 70 and PER_PPA > 65  → +2.0
   K2: PMR_PUT > 70 and relies on one putaway pitch  → +1.5
   K3: lineup discipline > 65 and PER_FPS > 60  → +1.5
@@ -21,6 +21,9 @@ Interaction boosts (capped at 7.0):
   K5: TLR_TOP4K > 70 and sportsbook K line >= pitcher median + 1.0  → +2.0
   K6: KOP_TTO > 70 and OCR_FOUL > 65  → +1.0
   K7: UKS > 65 and weak edge-command profile  → +1.0
+  Zone Sympathy: UHS_ZONE > 70 and PCS_CMD > 70  → +4.0
+  K8 Swing-and-Miss Collision: PER_DEEP > 75 and OCR_DISC < 40  → +4.0
+  K9 Swing Plane Divergence (SKU #39): collision_score > 70 and VAA < -5.0°  → +2.5
 
 Volatility penalties (capped at 8.5):
   KV1: lineup uncertainty              -2.5
@@ -282,6 +285,21 @@ def compute_kusi_interaction(
         if not silent:
             log.info("KUSI K8 Swing-and-Miss Collision triggered", pitcher=name,
                      per_deep=per_deep, ocr_disc=ocr_disc, boost=4.0)
+
+    # ── K9 Swing Plane Divergence (SKU #39):
+    # When the lineup's attack angles are significantly mismatched vs. this pitcher's
+    # VAA (collision_score > 70) AND the pitcher throws a steep downward trajectory
+    # (VAA < -5.0°), the plane mismatch is physical — not just tendency-based.
+    # Batters genuinely cannot match the ball's path; whiffs and foul tips compound
+    # on two-strike counts, creating real K upside beyond what lineup K-rates predict.
+    # Source: Eno Sarris / Statcast bat-tracking research; TrackMan plane data.
+    collision = _f(f.swing_plane_collision_score)
+    vaa = f.vaa_degrees
+    if collision > 70 and vaa is not None and vaa < -5.0:
+        boost += 2.5
+        if not silent:
+            log.info("KUSI K9 Swing Plane Divergence triggered", pitcher=name,
+                     collision_score=collision, vaa=vaa, boost=2.5)
 
     capped = min(boost, 9.0)  # raised cap for new Merlin rules
     if not silent:

@@ -1,35 +1,35 @@
 """
 Expected IP Window — realistic innings-pitched projection per pitcher tier.
 
-Modern starters never pitch 9 innings. This module enforces a hard ceiling
-and uses each pitcher's actual season average (or a service-year tier as
-fallback) to drive the base projection in the HUSI and KUSI engines.
+Modern starters are managed aggressively. The 2026 MLB average starter exits
+around 5.1 IP. A hard ceiling of 5.5 prevents the formula from over-projecting
+Ks for pitchers who will not see the 7th inning in most starts.
 
 Hard windows:
-  Minimum returnable: 3.5 IP   (prevents absurd projections for very short outings)
-  Maximum returnable: 7.5 IP   (hard ceiling — complete games are essentially extinct)
+  Minimum returnable: 3.5 IP   (prevents absurd projections for call-ups)
+  Maximum returnable: 5.5 IP   (hard ceiling — modern bullpen management reality)
 
 Tier fallbacks (used only when avg_ip_per_start is not available):
-  Rookie    0–1 years  →  4.25 IP
-  Developing 2–4 years →  5.25 IP
-  Veteran   5–9 years  →  6.00 IP
-  Ace       10+ years  →  6.50 IP
+  Rookie     0–1 years  →  4.00 IP
+  Developing 2–4 years  →  4.75 IP
+  Veteran    5–9 years  →  5.25 IP
+  Ace        10+ years  →  5.50 IP
 
-When actual avg_ip_per_start IS available, it is clamped to [3.5, 7.5]
+When actual avg_ip_per_start IS available, it is clamped to [3.5, 5.5]
 and used directly — real data always beats the tier estimate.
 """
 from typing import Optional
 
 # Hard floor/ceiling enforced on all projections
-IP_FLOOR = 3.5
-IP_CEILING = 7.5
+IP_FLOOR   = 3.5
+IP_CEILING = 5.5
 
 # Tier midpoints (fallback only)
 _TIER_TABLE = [
-    (1,  4.25),   # 0–1 years service
-    (4,  5.25),   # 2–4 years
-    (9,  6.00),   # 5–9 years
-    (99, 6.50),   # 10+ years (ace tier)
+    (1,  4.00),   # 0–1 years service
+    (4,  4.75),   # 2–4 years
+    (9,  5.25),   # 5–9 years
+    (99, 5.50),   # 10+ years (ace tier)
 ]
 
 
@@ -55,7 +55,7 @@ def expected_ip(
     Returns
     -------
     float
-        Expected IP in the range [3.5, 7.5].
+        Expected IP in the range [3.5, 5.5].
     """
     if avg_ip_per_start is not None and avg_ip_per_start > 0:
         return max(IP_FLOOR, min(IP_CEILING, avg_ip_per_start))
@@ -71,10 +71,10 @@ def expected_ip(
 
 def ip_tier_label(exp_ip: float) -> str:
     """Human-readable label for the IP window (used in logging and the API response)."""
-    if exp_ip <= 4.5:
+    if exp_ip <= 4.0:
         return "rookie/call-up"
-    if exp_ip <= 5.5:
+    if exp_ip <= 4.75:
         return "developing"
-    if exp_ip <= 6.25:
+    if exp_ip <= 5.25:
         return "veteran"
     return "ace"

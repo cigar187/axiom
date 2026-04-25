@@ -98,6 +98,7 @@ def build_features(
     catcher_framing: dict = None,
     travel_fatigue: dict = None,
     vaa_data: dict = None,
+    swing_profiles: dict = None,
 ) -> PitcherFeatureSet:
     """
     Build a PitcherFeatureSet for one pitcher.
@@ -134,17 +135,32 @@ def build_features(
     f.season_hits_per_9 = pitcher_data.get("season_hits_per_9")
     f.season_k_per_9 = pitcher_data.get("season_k_per_9")
 
-    # ── Season ERA Tier (HV10) — flag pitchers who are struggling all season, not just recently
+    # ── Season ERA — stored for logging/reference only, no longer drives a penalty
     era = pitcher_data.get("season_era") or pitcher_data.get("era")
     if era is not None:
-        era = float(era)
-        f.season_era_raw = era
-        if era >= 6.00:
-            f.season_era_tier = "DISASTER"
-        elif era >= 5.00:
-            f.season_era_tier = "STRUGGLING"
+        f.season_era_raw = float(era)
+
+    # ── Hard Hit Rate Tier (replaces ERA tier as HV10 — Tango/SABR validated)
+    # ERA is defense-dependent and lagging; hard-hit rate is the pitcher's true contact quality allowed.
+    # Source: pitcher_data["season_hard_hit_pct"] from MLB Stats / Baseball Savant
+    hard_hit = pitcher_data.get("season_hard_hit_pct")
+    if hard_hit is not None:
+        hard_hit = float(hard_hit)
+        f.season_hard_hit_pct = hard_hit
+        if hard_hit > 40.0:
+            f.hard_hit_tier = "DISASTER"    # pitcher is getting crushed — ball is jumping off the bat
+        elif hard_hit > 35.0:
+            f.hard_hit_tier = "STRUGGLING"  # above-average hard contact allowed
+        elif hard_hit < 28.0:
+            f.hard_hit_tier = "ELITE"       # pitcher is suppressing hard contact — a genuine hit suppressor
         else:
-            f.season_era_tier = "NORMAL"
+            f.hard_hit_tier = "NORMAL"
+    # else: defaults to NORMAL — no penalty, no boost, neutral
+
+    # ── Raw GB% — stored for direct multiplier in husi.py (not normalized)
+    gb_pct = pitcher_data.get("season_gb_pct")
+    if gb_pct is not None:
+        f.season_gb_pct = float(gb_pct)
 
     # ── IP window — drives realistic per-start projection baseline
     f.avg_ip_per_start = pitcher_data.get("avg_ip_per_start")   # actual season avg IP/GS
@@ -168,15 +184,44 @@ def build_features(
     all_h9 = [p["season_hits_per_9"] for p in all_pitchers_data.values() if p.get("season_hits_per_9")]
     all_k9 = [p["season_k_per_9"] for p in all_pitchers_data.values() if p.get("season_k_per_9")]
     all_bb9 = [p.get("season_bb_per_9") for p in all_pitchers_data.values() if p.get("season_bb_per_9")]
-    all_gb = [p.get("season_gb_pct") for p in all_pitchers_data.values() if p.get("season_gb_pct")]
+    # Use season_go_ao (GO/AO ratio from MLB Stats API) for z-score normalization.
+    # This is ALWAYS on the same scale (0.5-2.5) regardless of whether Statcast data
+    # is available — avoids mixing GO/AO ratios with Statcast GB percentages in the
+    # population list. season_gb_pct is used separately for the husi.py direct suppressor.
+    all_go_ao = [p.get("season_go_ao") for p in all_pitchers_data.values() if p.get("season_go_ao")]
+    # Hard-hit rate population — used to differentiate pcs_bara from pcs_hha (no double-counting)
+    all_hhr = [p.get("season_hard_hit_pct") for p in all_pitchers_data.values() if p.get("season_hard_hit_pct")]
+    # WHIP proxy (H/9 + BB/9) — combined baserunner rate for ops_traffic
+    all_whip_proxy = [
+        p["season_hits_per_9"] + p["season_bb_per_9"]
+        for p in all_pitchers_data.values()
+        if p.get("season_hits_per_9") and p.get("season_bb_per_9")
+    ]
+    # K/BB ratio — stuff × control combined; a distinct signal from K/9 or BB/9 alone
+    # Used for per_ppa (pitching efficiency). High ratio = works ahead, efficient per AB.
+    all_k_bb = [
+        p["season_k_per_9"] / p["season_bb_per_9"]
+        for p in all_pitchers_data.values()
+        if p.get("season_k_per_9") and p.get("season_bb_per_9") and p["season_bb_per_9"] > 0
+    ]
 
     # ── PCS — Pitcher Contact Suppression
-    # Ground-ball rate: higher GB = better for under → normal direction
-    if pitcher_data.get("season_gb_pct") and len(all_gb) >= 3:
-        f.pcs_gb = _zscore_score(pitcher_data["season_gb_pct"], all_gb, direction="normal")
-    # Hits/9: lower = better for under → reverse direction
+    # Ground-ball GO/AO ratio: higher = more grounders = better for under → normal direction
+    if pitcher_data.get("season_go_ao") and len(all_go_ao) >= 3:
+        f.pcs_gb = _zscore_score(pitcher_data["season_go_ao"], all_go_ao, direction="normal")
+    # Hits/9: lower = better for under. Drives pcs_hha (hits allowed per 9).
     if pitcher_data.get("season_hits_per_9") and len(all_h9) >= 3:
         f.pcs_hha = _zscore_score(pitcher_data["season_hits_per_9"], all_h9, direction="reverse")
+    # Hard-hit rate %: drives pcs_bara (barrel/hard-contact rate against).
+    # Uses Statcast hard_hit_pct — a DIFFERENT signal than hits/9.
+    # Eliminates multicollinearity: pcs_bara was previously set equal to pcs_hha (both using hits/9),
+    # giving hits/9 a combined 0.30 weight in PCS when it should only carry 0.14.
+    hhr = pitcher_data.get("season_hard_hit_pct")
+    if hhr is not None and len(all_hhr) >= 3:
+        # High hard-hit rate = pitcher allows more hard contact = bad for hits under → reverse
+        f.pcs_bara = _zscore_score(float(hhr), all_hhr, direction="reverse")
+    elif pitcher_data.get("season_hits_per_9") and len(all_h9) >= 3:
+        # Fallback only when Statcast HHR unavailable — avoids None but marks as imperfect
         f.pcs_bara = _zscore_score(pitcher_data["season_hits_per_9"], all_h9, direction="reverse")
     # Walk rate: lower = better → reverse direction
     if pitcher_data.get("season_bb_per_9") and len(all_bb9) >= 3:
@@ -228,10 +273,93 @@ def build_features(
         f.ocr_con = 50.0
         f.ocr_disc = 50.0
 
-    # per_putw and per_velo come from pitcher profile, not opponent
+    # ── OWC — Opponent Weaknesses vs Contact (from opposing team's season hitting stats)
+    # Replaces static 50.0 defaults with real data from the same team_hitting_stats dict
+    # already fetched for OCR. No additional API calls needed.
+    #
+    # Convention: HIGHER OWC score = lineup is WEAKER at contact = BETTER for pitcher
+    #   (supports the hits-allowed under prop)
+    #
+    # Mapping:
+    #   owc_babip ← team AVG     (high AVG lineup = dangerous = lower score)  [reverse]
+    #   owc_hh    ← team SLG     (high SLG = hard contact tendency = lower)   [reverse]
+    #   owc_bar   ← team SLG     (same data; SLG best proxy for barrel rate)  [reverse]
+    #   owc_ld    ← contact_rate (high contact rate = more balls in play)      [reverse]
+    #   owc_xba   ← team OBP     (high OBP = patient, dangerous = lower)      [reverse]
+    #   owc_bot3  ← team k_rate  (high K rate = weak bottom of lineup = higher)[normal]
+    #   owc_topheavy: computed later from individual batter K rates (lineup data)
+    if opp_stats and len(all_team_stats) >= 20:
+        all_avg = [t["avg"] for t in all_team_stats if t.get("avg")]
+        all_slg = [t["slg"] for t in all_team_stats if t.get("slg")]
+        all_obp = [t["obp"] for t in all_team_stats if t.get("obp")]
+
+        opp_avg = opp_stats.get("avg", 0.250)
+        opp_slg = opp_stats.get("slg", 0.400)
+        opp_obp = opp_stats.get("obp", 0.320)
+        opp_k   = opp_stats.get("k_rate", 20.0)
+        opp_con = opp_stats.get("contact_rate", 75.0)
+
+        if len(all_avg) >= 20:
+            f.owc_babip = _zscore_score(opp_avg, all_avg, direction="reverse")
+        if len(all_slg) >= 20:
+            # owc_hh: opponent SLG — measures overall hard-contact / extra-base tendency.
+            f.owc_hh = _zscore_score(opp_slg, all_slg, direction="reverse")
+        if len(all_avg) >= 20 and len(all_slg) >= 20:
+            # owc_bar: Isolated Power (ISO = SLG - AVG) — measures pure extra-base power
+            # independent of batting average. This is a DIFFERENT signal from SLG:
+            # ISO strips out singles and measures only the batter's ability to drive
+            # the ball for extra bases (doubles, triples, HRs) — i.e., barrel tendency.
+            # Previously owc_bar was set equal to owc_hh (same SLG value), giving SLG
+            # a combined 0.38 weight (0.20 + 0.18) in OWC — a clear multicollinearity bug.
+            all_iso = [
+                t["slg"] - t["avg"]
+                for t in all_team_stats
+                if t.get("slg") is not None and t.get("avg") is not None
+            ]
+            opp_iso = opp_slg - opp_avg
+            if len(all_iso) >= 20:
+                f.owc_bar = _zscore_score(opp_iso, all_iso, direction="reverse")
+        if len(all_contact_rates) >= 20:
+            f.owc_ld = _zscore_score(opp_con, all_contact_rates, direction="reverse")
+        if len(all_obp) >= 20:
+            f.owc_xba = _zscore_score(opp_obp, all_obp, direction="reverse")
+        if len(all_k_rates) >= 20:
+            f.owc_bot3 = _zscore_score(opp_k, all_k_rates, direction="normal")
+
+        log.info("OWC from team hitting stats",
+                 pitcher=pitcher_data.get("pitcher_name"),
+                 opponent_team_id=opponent_team_id,
+                 opp_avg=opp_avg, owc_babip=round(f.owc_babip or 50.0, 1),
+                 opp_slg=opp_slg, owc_hh=round(f.owc_hh or 50.0, 1),
+                 opp_obp=opp_obp, owc_xba=round(f.owc_xba or 50.0, 1),
+                 opp_k=opp_k, owc_bot3=round(f.owc_bot3 or 50.0, 1))
+
+    # per_velo from K/9 (fallback when SwStr% not available)
     if pitcher_data.get("season_k_per_9") and len(all_k9) >= 3:
-        f.per_putw = _zscore_score(pitcher_data["season_k_per_9"], all_k9, direction="normal")
         f.per_velo = _zscore_score(pitcher_data["season_k_per_9"], all_k9, direction="normal")
+
+    # per_putw: Swinging Strike Rate (SwStr%) — Eno Sarris / Stuff+ validated as more predictive than K/9.
+    # SwStr% directly measures how often the pitcher generates whiffs, independent of ball/strike calls.
+    # Falls back to K/9 z-score normalization if SwStr% is not available.
+    swstr = pitcher_data.get("season_swstr_pct")
+    if swstr is not None and swstr > 0:
+        f.season_swstr_pct = float(swstr)
+        # Collect population-level SwStr% for z-score normalization
+        all_swstr = [
+            p.get("season_swstr_pct") for p in all_pitchers_data.values()
+            if p.get("season_swstr_pct")
+        ]
+        if len(all_swstr) >= 3:
+            f.per_putw = _zscore_score(swstr, all_swstr, direction="normal")
+            log.info("SwStr% wired to per_putw",
+                     pitcher=name, swstr_pct=swstr, per_putw=f.per_putw)
+        else:
+            # Not enough pitchers with SwStr% today — fall back to K/9
+            if pitcher_data.get("season_k_per_9") and len(all_k9) >= 3:
+                f.per_putw = _zscore_score(pitcher_data["season_k_per_9"], all_k9, direction="normal")
+    elif pitcher_data.get("season_k_per_9") and len(all_k9) >= 3:
+        # No SwStr% available — K/9 fallback
+        f.per_putw = _zscore_score(pitcher_data["season_k_per_9"], all_k9, direction="normal")
 
     # ── PER — walk rate as BB score
     if pitcher_data.get("season_bb_per_9") and len(all_bb9) >= 3:
@@ -361,18 +489,49 @@ def build_features(
         f.ops_hook = 50.0
         f.kop_hook = 50.0
 
-    f.ops_pcap  = 55.0   # TODO: pitch count capacity from pitcher's last 5 starts
-    f.ops_traffic = 50.0
-    f.ops_tto   = 50.0   # TODO: pitcher TTO splits from Statcast
-    f.ops_inj   = 60.0   # TODO: injury report status
-    f.ops_trend = 50.0   # TODO: last 3-start ERA trend
-    f.ops_fat   = 55.0   # TODO: days rest calculation from schedule
+    # ── OPS / KOP computed from existing data (no new API calls)
+    # expected_ip already imported — gives realistic innings projection for this pitcher.
+    _exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years)
 
-    f.kop_pcap  = 55.0
-    f.kop_tto   = 50.0
-    f.kop_pat   = 50.0
+    # ops_pcap / kop_pcap: pitch count capacity.
+    # A pitcher who averages 6.5 IP throws ~100 pitches deep; one who averages 4.5 IP exits at 65.
+    # Range: 35 (short-arm/piggyback) to 95 (workhorse ace). Midpoint 65 ≈ 5.5 IP average.
+    _pcap = clamp(round(35.0 + (_exp_ip / 7.0) * 60.0, 2))
+    f.ops_pcap = _pcap
+    f.kop_pcap = _pcap
+
+    # ops_traffic: high-traffic inning avoidance.
+    # WHIP proxy (H/9 + BB/9) = baserunner rate. Lower = fewer runners = better for pitcher.
+    # z-score reverse: a low WHIP proxy pitcher → fewer jams → higher ops_traffic score.
+    _h9  = pitcher_data.get("season_hits_per_9") or 9.0
+    _bb9 = pitcher_data.get("season_bb_per_9") or 3.0
+    _whip_proxy = _h9 + _bb9
+    if len(all_whip_proxy) >= 3:
+        f.ops_traffic = _zscore_score(_whip_proxy, all_whip_proxy, direction="reverse")
+    else:
+        f.ops_traffic = 50.0
+
+    # ops_tto / kop_tto: TTO (times-through-order) awareness.
+    # Pitchers who regularly go 6+ IP face TTO3 and must manage it.
+    # Tier: deeper starters have more TTO3 experience and survival → slight advantage.
+    if _exp_ip >= 6.5:
+        _tto_score = 65.0
+    elif _exp_ip >= 5.5:
+        _tto_score = 55.0
+    elif _exp_ip >= 5.0:
+        _tto_score = 48.0
+    else:
+        _tto_score = 40.0  # short starter, rarely reaches TTO3
+    f.ops_tto = _tto_score
+    f.kop_tto = _tto_score
+
+    f.ops_inj   = 60.0   # no injury report source connected — slight positive default
+    f.ops_trend = 50.0   # overwritten below after PFF block (pff_score not yet computed)
+    f.ops_fat   = 55.0   # overwritten by TFI block when travel data is available
+
+    f.kop_pat   = 50.0   # patience vs this pitcher — would overlap with ocr_disc; keep neutral
     f.kop_inj   = 60.0
-    f.kop_fat   = 55.0
+    f.kop_fat   = 55.0   # overwritten by TFI block when travel data is available
 
     # DSC: default neutral until defensive metric source connected
     f.dsc_def    = 50.0  # TODO: team DRS / OAA from FanGraphs
@@ -381,14 +540,14 @@ def build_features(
     f.dsc_catch  = 50.0
     f.dsc_align  = 50.0
 
-    # OWC defaults
-    f.owc_babip    = 50.0  # TODO: opponent BABIP vs pitcher hand
-    f.owc_hh       = 50.0  # TODO: opponent hard-hit rate
-    f.owc_bar      = 50.0
-    f.owc_ld       = 50.0
-    f.owc_xba      = 50.0
-    f.owc_bot3     = 50.0
-    f.owc_topheavy = 50.0
+    # OWC fallbacks — only applied if real team stats were unavailable above
+    if f.owc_babip    is None: f.owc_babip    = 50.0
+    if f.owc_hh       is None: f.owc_hh       = 50.0
+    if f.owc_bar      is None: f.owc_bar      = 50.0
+    if f.owc_ld       is None: f.owc_ld       = 50.0
+    if f.owc_xba      is None: f.owc_xba      = 50.0
+    if f.owc_bot3     is None: f.owc_bot3     = 50.0
+    if f.owc_topheavy is None: f.owc_topheavy = 50.0
 
     # PMR defaults
     f.pmr_p1   = 50.0   # TODO: primary pitch whiff rate
@@ -398,11 +557,25 @@ def build_features(
     f.pmr_top6 = 50.0
     f.pmr_plat = 50.0
 
-    # PER remaining defaults
-    f.per_ppa  = 50.0   # TODO: pitches per AB from Statcast
-    f.per_fps  = 50.0   # TODO: first-pitch strike rate
-    f.per_deep = 50.0
-    f.per_cmdd = 50.0
+    # PER remaining defaults (computed where a non-overlapping signal exists)
+    # per_ppa: pitching efficiency (pitches per at-bat).
+    # K/BB ratio captures this cleanly: high Ks + low BBs = works ahead = fewer pitches per AB.
+    # This is a distinct signal from K/9 alone (per_velo) and BB/9 alone (per_bb).
+    _k9  = pitcher_data.get("season_k_per_9") or 0.0
+    _bb9_per = pitcher_data.get("season_bb_per_9") or 0.0
+    if _k9 > 0 and _bb9_per > 0 and len(all_k_bb) >= 3:
+        _k_bb_ratio = _k9 / _bb9_per
+        # High K/BB = works efficiently ahead in counts = good per_ppa → normal direction
+        f.per_ppa = _zscore_score(_k_bb_ratio, all_k_bb, direction="normal")
+    else:
+        f.per_ppa = 50.0
+
+    # per_deep: ability to pitch deep into games — directly from avg IP per start.
+    # The cleanest mapping: 7 IP average → 90, 5 IP average → 40.
+    f.per_deep = clamp(round(40.0 + (_exp_ip / 7.0) * 50.0, 2))
+
+    f.per_fps  = 50.0   # first-pitch strike rate — no clean non-overlapping proxy available
+    f.per_cmdd = 50.0   # command/location — would overlap with per_bb and pcs_cmd if wired to BB/9
 
     # OCR sub-features not yet sourced from live data — set only if not already populated above
     if f.ocr_zcon is None: f.ocr_zcon = 50.0
@@ -450,6 +623,43 @@ def build_features(
             # VET score: proxy by avg at-bats (more AB = more veteran = harder to strike out)
             avg_ab = statistics.mean([b.get("ab", 0) for b in opp_batters[:6]])
             f.tlr_vet = clamp(round((avg_ab / 600) * 100, 2))  # 600 AB = 100, 0 AB = 0
+
+            # ── Lineup Fluidity Score
+            # Measures how aggressively a manager will pinch-hit in TTO3.
+            # Large K-rate spread between bottom and top of order = manager has weak
+            # slots worth replacing with a dangerous bench bat in late innings.
+            # The simulation uses this to model stochastic lineup changes.
+            full_k = k_rates  # all batters (up to 9) with enough ABs
+            if len(full_k) >= 6:
+                top3_k_flu    = statistics.mean(full_k[:3])
+                bottom3_k_flu = statistics.mean(full_k[-3:])
+                # spread: positive = bottom orders strike out more (top-heavy = fluidity target)
+                flu_spread = bottom3_k_flu - top3_k_flu
+                # Normalize: +10% spread → very fluid (score ≈ 100); 0% spread → neutral (50)
+                league_flu_std = 8.0
+                flu_z = flu_spread / league_flu_std
+                f.lineup_fluidity_score = round(clamp(50.0 + 20.0 * flu_z), 2)
+            else:
+                f.lineup_fluidity_score = 50.0  # not enough batters — neutral
+
+            # ── OWC_TOPHEAVY from individual batter K rates
+            # Measures whether the lineup is top-heavy: dangerous top batters, weak bottom.
+            # Large spread (bottom-3 K rate >> top-3 K rate) = pitcher gets easy outs at 7-8-9.
+            if len(k_rates) >= 6:
+                top3_k    = statistics.mean(k_rates[:3])
+                bottom3_k = statistics.mean(k_rates[-3:])
+                # topheavy_spread: positive = bottom strikeouts more than top = top-heavy lineup
+                topheavy_spread = bottom3_k - top3_k
+                # Normalize: 0 spread = neutral (50). +10% spread = very top-heavy (high score).
+                league_spread_std = 6.0  # typical spread between top and bottom of lineup
+                z_th = topheavy_spread / league_spread_std
+                f.owc_topheavy = round(clamp(50.0 + 15.0 * z_th), 2)
+                log.info("OWC topheavy from lineup K spread",
+                         pitcher=pitcher_data.get("pitcher_name"),
+                         top3_k=round(top3_k, 1),
+                         bottom3_k=round(bottom3_k, 1),
+                         topheavy_spread=round(topheavy_spread, 1),
+                         owc_topheavy=f.owc_topheavy)
 
             log.info("TLR from real batter K rates",
                      pitcher=pitcher_data.get("pitcher_name"),
@@ -534,6 +744,11 @@ def build_features(
                  starts_used=f.pff_starts_used,
                  hits_tto1=f.pff_hits_tto1_mult,
                  ks_tto1=f.pff_ks_tto1_mult)
+
+    # ── ops_trend: now that PFF is computed, wire recent form into the trend score.
+    # PFF is in [-0.30, +0.30]; +0.30 (ON FIRE) → ops_trend 80; -0.30 (STRUGGLING) → 20.
+    # This replaces the static 50.0 placeholder set earlier.
+    f.ops_trend = clamp(round(50.0 + f.pff_score * 100.0, 2))
 
     # ── SKU #37 — Catcher Framing
     # The defending catcher's framing ability modifies KUSI. An elite framer
@@ -633,6 +848,54 @@ def build_features(
                      ext=ext,
                      flat=f.vaa_flat,
                      elite_ext=f.extension_elite)
+
+    # ── SKU #39 — Swing Plane Collision Score
+    # Physics: the pitcher's ball descends at |VAA|° below horizontal.
+    # Each batter's "ideal" attack angle to square that pitch is:
+    #   ideal_aa = |vaa| + 5.0°
+    # (the +5° offset accounts for the geometry of a bat rising to meet a descending ball;
+    #  empirically validated by Eno Sarris / Statcast bat-tracking research)
+    # When a batter's actual attack angle diverges from ideal_aa, the collision is
+    # inefficient — producing soft contact, pop-ups, or foul tips instead of barrels.
+    #
+    # Drives:
+    #   f.pcs_soft            → HUSI PCS block (soft contact proxy, weight 0.16)
+    #   f.swing_plane_collision_score → raw value used by KUSI K9 interaction rule
+    sp = swing_profiles or {}
+    if sp and f.vaa_degrees is not None and opp_batters:
+        ideal_aa = abs(f.vaa_degrees) + 5.0
+        mismatches = []
+        for batter in opp_batters:
+            batter_id = str(batter.get("batter_id") or "")
+            profile = sp.get(batter_id, {})
+            aa = profile.get("attack_angle")
+            if aa is not None:
+                mismatches.append(abs(aa - ideal_aa))
+
+        if mismatches:
+            avg_mismatch = statistics.mean(mismatches)
+            # 0° mismatch = neutral (50). Each degree of avg mismatch = +4 score points.
+            # +5° avg mismatch → score ≈ 70 (elevated advantage)
+            # +10° avg mismatch → score ≈ 90 (strong advantage)
+            collision_score = round(clamp(50.0 + avg_mismatch * 4.0), 2)
+            f.swing_plane_collision_score = collision_score
+            f.pcs_soft = collision_score  # soft contact proxy — drives HUSI PCS block
+            log.info("SKU #39 Swing Plane Collision",
+                     pitcher=name,
+                     vaa=f.vaa_degrees,
+                     ideal_aa=round(ideal_aa, 1),
+                     avg_mismatch_deg=round(avg_mismatch, 2),
+                     collision_score=collision_score,
+                     batters_matched=len(mismatches),
+                     batters_total=len(opp_batters))
+        else:
+            log.debug("Swing Plane Collision: no batter profiles matched lineup",
+                      pitcher=name, opp_batters=len(opp_batters))
+    elif not sp:
+        log.debug("Swing Plane Collision: profiles not fetched yet — pcs_soft remains None",
+                  pitcher=name)
+    elif f.vaa_degrees is None:
+        log.debug("Swing Plane Collision: VAA unavailable — skipping", pitcher=name)
 
     log.info("Features built", pitcher=name, k_line=f.k_line, hits_line=f.hits_line,
              k9=f.season_k_per_9, h9=f.season_hits_per_9, ens_park=f.ens_park,

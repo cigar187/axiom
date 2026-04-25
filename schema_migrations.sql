@@ -402,3 +402,142 @@ CREATE TABLE IF NOT EXISTS ml_model_outputs (
 
 CREATE INDEX IF NOT EXISTS idx_ml_outputs_date ON ml_model_outputs (game_date);
 
+
+-- ─────────────────────────────────────────────────────────────
+-- 10. statcast_pitcher_cache
+-- Every stat Axiom fetches from Baseball Savant is stored here.
+-- Cache-first: if Baseball Savant is unavailable, the pipeline reads
+-- from this table instead. Over time this becomes Axiom's own
+-- historical Statcast dataset — no external dependency required.
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS statcast_pitcher_cache (
+    id              BIGSERIAL    PRIMARY KEY,
+    pitcher_id      VARCHAR(32)  NOT NULL,
+    season          VARCHAR(8)   NOT NULL,
+    player_name     VARCHAR(128),
+
+    -- Statcast metrics (season-to-date at time of last fetch)
+    swstr_pct       FLOAT,           -- Whiff % (SwStr proxy — feeds KUSI per_putw)
+    hard_hit_pct    FLOAT,           -- Hard Hit Rate % (feeds HUSI HV10 penalty)
+    gb_pct          FLOAT,           -- Actual Ground Ball % (feeds HUSI GB suppressor)
+    innings_pitched FLOAT,           -- IP at capture time (for staleness detection)
+
+    -- Provenance
+    fetched_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    data_source     VARCHAR(32)  DEFAULT 'baseball_savant',
+    updated_at      TIMESTAMPTZ  DEFAULT NOW(),
+
+    CONSTRAINT uq_statcast_pitcher_season UNIQUE (pitcher_id, season)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statcast_cache_pitcher ON statcast_pitcher_cache (pitcher_id);
+CREATE INDEX IF NOT EXISTS idx_statcast_cache_season  ON statcast_pitcher_cache (season);
+
+
+-- ─────────────────────────────────────────────────────────────
+-- 11. axiom_pitcher_stats
+-- Axiom's proprietary growing pitcher dataset.
+-- One row per pitcher per season, updated daily by the pipeline.
+-- Aggregates MLB Stats API + Statcast + Axiom formula outputs.
+--
+-- This is what makes Axiom defensible as a business:
+--   Year 1: mirrors external APIs
+--   Year 3: fills gaps external APIs miss
+--   Year 5+: becomes the primary source, external APIs are supplements
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS axiom_pitcher_stats (
+    id              BIGSERIAL    PRIMARY KEY,
+    pitcher_id      VARCHAR(32)  NOT NULL,
+    season          VARCHAR(8)   NOT NULL,
+    player_name     VARCHAR(128),
+    team_id         VARCHAR(32),
+
+    -- MLB Stats API layer (the raw stat foundation)
+    season_era          FLOAT,
+    season_k_per_9      FLOAT,
+    season_h_per_9      FLOAT,
+    season_bb_per_9     FLOAT,
+    season_k_pct        FLOAT,
+    season_go_ao        FLOAT,       -- GO/AO ratio (MLB Stats API)
+    avg_ip_per_start    FLOAT,
+    mlb_service_years   FLOAT,
+    games_started       INTEGER,
+    total_ip            FLOAT,
+
+    -- Statcast layer (defense-independent, forward-looking)
+    season_swstr_pct    FLOAT,       -- Swinging Strike %
+    season_hard_hit_pct FLOAT,       -- Hard Hit Rate %
+    season_gb_pct       FLOAT,       -- Actual Ground Ball %
+
+    -- Axiom proprietary layer (formula outputs — our intellectual property)
+    -- These values cannot be reconstructed from any external API.
+    axiom_husi_avg      FLOAT,       -- Season average HUSI score
+    axiom_kusi_avg      FLOAT,       -- Season average KUSI score
+    axiom_husi_trend    FLOAT,       -- Last 5 starts HUSI trend (positive = improving)
+    axiom_kusi_trend    FLOAT,       -- Last 5 starts KUSI trend
+    axiom_starts_scored INTEGER,     -- Number of starts Axiom has scored this season
+
+    -- Data provenance
+    mlb_stats_last_updated  TIMESTAMPTZ,
+    statcast_last_updated   TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ  DEFAULT NOW(),
+
+    CONSTRAINT uq_axiom_pitcher_season UNIQUE (pitcher_id, season)
+);
+
+CREATE INDEX IF NOT EXISTS idx_axiom_stats_pitcher ON axiom_pitcher_stats (pitcher_id);
+CREATE INDEX IF NOT EXISTS idx_axiom_stats_season  ON axiom_pitcher_stats (season);
+CREATE INDEX IF NOT EXISTS idx_axiom_stats_name    ON axiom_pitcher_stats (player_name);
+
+
+-- 12. axiom_game_lineup — Axiom's proprietary batter vault
+-- Stores every batter's hitting stats for every game we score.
+-- This gives Axiom ownership of historical lineup data independent of MLB Stats API.
+-- Also powers the simulation engine's lineup fluidity model:
+--   the K-rate spread between top and bottom of the batting order drives
+--   the stochastic pinch-hitter probability in TTO3 simulation runs.
+CREATE TABLE IF NOT EXISTS axiom_game_lineup (
+    id                  BIGSERIAL       PRIMARY KEY,
+
+    -- Game context
+    game_id             VARCHAR(32)     NOT NULL,
+    team_id             VARCHAR(32)     NOT NULL,
+    game_date           DATE            NOT NULL,
+    season              VARCHAR(8)      NOT NULL,
+    side                VARCHAR(8),                 -- "home" or "away"
+    lineup_confirmed    BOOLEAN         DEFAULT FALSE,
+
+    -- Individual batter identity
+    batter_id           VARCHAR(32)     NOT NULL,
+    batter_name         VARCHAR(128),
+    batting_order       INTEGER,                    -- 1-9 slot in the starting lineup
+
+    -- Season hitting stats (snapshot at game-day)
+    k_rate              FLOAT,                      -- strikeout rate per AB (%)
+    k_per_pa            FLOAT,                      -- strikeout rate per PA (%)
+    bb_rate             FLOAT,                      -- walk rate per PA (%)
+    avg                 FLOAT,                      -- batting average
+    obp                 FLOAT,                      -- on-base percentage
+    slg                 FLOAT,                      -- slugging percentage
+    at_bats             INTEGER,                    -- sample size (season AB)
+
+    -- Axiom-computed danger score for this batting slot (0-100)
+    -- High = dangerous contact hitter. Used by simulation for PH probability.
+    lineup_slot_danger  FLOAT,
+
+    created_at          TIMESTAMP WITH TIME ZONE    DEFAULT NOW(),
+    updated_at          TIMESTAMP WITH TIME ZONE    DEFAULT NOW(),
+
+    CONSTRAINT uq_game_team_batter UNIQUE (game_id, team_id, batter_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lineup_game    ON axiom_game_lineup (game_id);
+CREATE INDEX IF NOT EXISTS idx_lineup_team    ON axiom_game_lineup (team_id);
+CREATE INDEX IF NOT EXISTS idx_lineup_date    ON axiom_game_lineup (game_date);
+CREATE INDEX IF NOT EXISTS idx_lineup_batter  ON axiom_game_lineup (batter_id);
+
+-- SKU #39 — Swing Plane Collision: add batter bat-tracking metrics
+-- Run once on existing databases; CREATE TABLE already includes these columns for new installs.
+ALTER TABLE axiom_game_lineup ADD COLUMN IF NOT EXISTS avg_attack_angle FLOAT;
+ALTER TABLE axiom_game_lineup ADD COLUMN IF NOT EXISTS swing_tilt       FLOAT;

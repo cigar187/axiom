@@ -13,7 +13,7 @@ Formula implemented exactly as specified:
   UHS = 0.34*CSTR + 0.28*ZONE + 0.20*EARLY + 0.18*WEAK
   DSC = 0.40*DEF + 0.20*INFDEF + 0.15*OFDEF + 0.15*CATCH + 0.10*ALIGN
 
-Interaction boosts (capped at 6.5):
+Interaction boosts (capped at 8.0 — raised for Merlin v2.0 Zone Sympathy and E1 rules):
   H1: GB > 65 and INFDEF > 65  → +1.5
   H2: fly-ball suppression > 60 and PARK > 70  → +1.5
   H3: WINDIN > 70 and LD > 60  → +1.0
@@ -21,8 +21,10 @@ Interaction boosts (capped at 6.5):
   H5: BOT3 > 70 and TTO > 65   → +1.0
   H6: REG > 65 and HHA > 65    → +1.0
   H7: TOPHEAVY > 70 and projected_batters_faced < 23  → +1.5
+  Zone Sympathy: UHS_ZONE > 70 and PCS_CMD > 70  → +4.0
+  E1 Heavy Air: ENS_AIR > 70 and ENS_OF > 75  → +5.0
 
-Volatility penalties (capped at 8.0):
+Volatility penalties (capped at 9.5 — raised for Merlin v2.0 H8 Pressure Cooker rule):
   HV1: lineup uncertainty       -2.5
   HV2: meaningful weather unc.  -1.5
   HV3: extreme pitcher BABIP var -1.5
@@ -372,17 +374,27 @@ def compute_husi_volatility(
                      park=f.ens_park, park_score=park_score,
                      park_hits_multiplier=f.park_hits_multiplier, penalty=2.5)
 
-    # HV10: struggling season ERA
-    if f.season_era_tier == "STRUGGLING":
+    # HV10: Hard Hit Rate tier (replaces ERA tier — Tango/SABR validated)
+    # ERA is defense-dependent and lagging. Hard-hit rate is what the pitcher actually controls:
+    # how often opponents make solid contact. A pitcher with 42% hard-hit rate is getting crushed
+    # regardless of what his ERA says. A pitcher at 26% is a genuine hit suppressor.
+    if f.hard_hit_tier == "STRUGGLING":
         penalty += 1.5
         if not silent:
-            log.info("HUSI HV10 struggling season ERA", pitcher=name,
-                     season_era=f.season_era_raw, tier="STRUGGLING", penalty=1.5)
-    elif f.season_era_tier == "DISASTER":
+            log.info("HUSI HV10 elevated hard-hit rate", pitcher=name,
+                     hard_hit_pct=f.season_hard_hit_pct, tier="STRUGGLING", penalty=1.5)
+    elif f.hard_hit_tier == "DISASTER":
         penalty += 3.0
         if not silent:
-            log.info("HUSI HV10 disaster season ERA", pitcher=name,
-                     season_era=f.season_era_raw, tier="DISASTER", penalty=3.0)
+            log.info("HUSI HV10 disaster hard-hit rate", pitcher=name,
+                     hard_hit_pct=f.season_hard_hit_pct, tier="DISASTER", penalty=3.0)
+    # ELITE hard-hit rate: pitcher is suppressing hard contact — add a boost
+    # This is logged but applied as a negative penalty (net boost to HUSI)
+    elif f.hard_hit_tier == "ELITE":
+        penalty -= 2.0   # reduces total penalty = net HUSI boost
+        if not silent:
+            log.info("HUSI HV10 elite hard-hit suppression BOOST", pitcher=name,
+                     hard_hit_pct=f.season_hard_hit_pct, tier="ELITE", boost=2.0)
 
     # ── H8 Pressure Cooker (Merlin v2.0):
     # High traffic innings + weak bottom of lineup = pitcher collapse.
@@ -395,7 +407,10 @@ def compute_husi_volatility(
             log.info("HUSI H8 Pressure Cooker triggered", pitcher=name,
                      ops_traffic=ops_traffic, owc_bot3=owc_bot3, penalty=3.5)
 
-    capped = min(penalty, 9.5)  # raised cap for new Merlin H8 rule
+    # Cap: 9.5 max penalty, no floor — negative penalty = net HUSI boost (ELITE hard-hit tier)
+    # When ELITE fires: penalty -= 2.0, resulting in a net 2-point HUSI boost via the subtraction
+    # in compute_husi: husi_raw = husi_base + interaction - volatility
+    capped = min(penalty, 9.5)
     if not silent:
         log.info("HUSI volatility total", pitcher=name, raw_penalty=penalty, capped=capped)
     return capped
@@ -608,6 +623,67 @@ def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
                          pitch_location_high_pct=f.pitch_location_high_pct,
                          contact_penalty_pct=f.vaa_contact_penalty,
                          hits_before=round(vaa_pre, 2),
+                         hits_after=round(projected_hits, 2))
+
+    # ── Ground Ball Suppressor (Tango DIPS-aligned)
+    # Two data sources — auto-detected by value scale:
+    #
+    #   Statcast GB% (preferred):  actual batted-ball percentage, e.g. 52.3
+    #     Range: ~25 (extreme flyball) to ~65 (elite groundballer like Alcantara)
+    #     Value will be > 5.0 — use percentage thresholds.
+    #
+    #   MLB Stats API GO/AO ratio (fallback): ground outs / air outs, e.g. 1.8
+    #     Range: ~0.5 (extreme flyball) to ~2.5 (elite groundballer)
+    #     Value will be <= 5.0 — use ratio thresholds.
+    #
+    # Ground-ball pitchers suppress extra-base hits directly — fewer fly balls means
+    # fewer doubles, triples, and HR opportunities. This multiplier captures what the
+    # PCS block's z-score normalization alone cannot fully represent.
+    if f.season_gb_pct is not None:
+        gb_val = f.season_gb_pct
+
+        if gb_val > 5.0:
+            # ── Statcast GB% (percentage scale: 25-65)
+            if gb_val > 55.0:
+                gb_mult = 0.91   # elite groundballer (Alcantara/Webb): 9% hit suppression
+            elif gb_val > 50.0:
+                gb_mult = 0.95   # above-average: 5% hit suppression
+            elif gb_val > 45.0:
+                gb_mult = 0.98   # slightly above neutral: 2% suppression
+            elif gb_val < 35.0:
+                gb_mult = 1.07   # extreme flyball (Cease type): 7% extra hits
+            elif gb_val < 40.0:
+                gb_mult = 1.03   # below-average: 3% penalty
+            else:
+                gb_mult = 1.0    # neutral (40-45%)
+            scale_label = "GB%"
+        else:
+            # ── MLB Stats API GO/AO ratio (fallback when Statcast unavailable)
+            go_ao = gb_val
+            if go_ao > 1.8:
+                gb_mult = 0.91
+            elif go_ao > 1.4:
+                gb_mult = 0.95
+            elif go_ao > 1.1:
+                gb_mult = 0.98
+            elif go_ao < 0.7:
+                gb_mult = 1.07
+            elif go_ao < 1.0:
+                gb_mult = 1.03
+            else:
+                gb_mult = 1.0
+            scale_label = "GO/AO"
+
+        if gb_mult != 1.0:
+            gb_pre = projected_hits
+            projected_hits = projected_hits * gb_mult
+            if not silent:
+                log.info("HUSI GB suppressor applied",
+                         pitcher=f.pitcher_name,
+                         gb_value=gb_val,
+                         scale=scale_label,
+                         gb_multiplier=gb_mult,
+                         hits_before=round(gb_pre, 2),
                          hits_after=round(projected_hits, 2))
 
     # ── Park Factor Direct Override

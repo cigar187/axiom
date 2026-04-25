@@ -537,15 +537,22 @@ async def merlin_board(
       Ks:    GREEN = K-CEIL >= 9.0      |  YELLOW = K-CEIL 7.0-9.0    |  RED = K-CEIL < 7.0
     """
     td = target_date or date.today()
-    result = await db.execute(
-        select(ModelOutputDaily)
+
+    # Join with ProbablePitcher and Game to get pitcher names and team info
+    hits_result = await db.execute(
+        select(ModelOutputDaily, ProbablePitcher, Game)
+        .join(ProbablePitcher, and_(
+            ModelOutputDaily.pitcher_id == ProbablePitcher.pitcher_id,
+            ModelOutputDaily.game_id == ProbablePitcher.game_id,
+        ))
+        .join(Game, ModelOutputDaily.game_id == Game.game_id)
         .where(
             ModelOutputDaily.game_date == td,
-            ModelOutputDaily.market_type == "hits",
+            ModelOutputDaily.market_type == "hits_allowed",
         )
-        .order_by(ModelOutputDaily.husi.desc().nullslast())
+        .order_by(ModelOutputDaily.husi.desc().nulls_last())
     )
-    hits_rows = result.scalars().all()
+    hits_rows = hits_result.all()
 
     # Pull matching K rows for same pitchers
     k_result = await db.execute(
@@ -557,14 +564,18 @@ async def merlin_board(
     )
     k_rows_by_pitcher = {r.pitcher_id: r for r in k_result.scalars().all()}
 
-    from app.utils.teams import get_team_abbrev, get_team_name
-
     board = []
-    for h in hits_rows:
-        k = k_rows_by_pitcher.get(h.pitcher_id)
+    for h_out, h_pitcher, h_game in hits_rows:
+        k = k_rows_by_pitcher.get(h_out.pitcher_id)
+
+        # Determine opponent from game info
+        pitcher_team_name_mb = get_team_name(h_pitcher.team_id) or ""
+        opponent_mb = (
+            h_game.away_team if pitcher_team_name_mb == h_game.home_team else h_game.home_team
+        ) if h_game else ""
 
         # Color tier for hits side
-        husi_val = h.husi or 0.0
+        husi_val = h_out.husi or 0.0
         if husi_val >= 57:
             hits_color = "GREEN"
         elif husi_val >= 45:
@@ -581,26 +592,25 @@ async def merlin_board(
         else:
             ks_color = "RED"
 
-        opp_name = get_team_name(h.away_team_id or "") if h.home_away == "home" else get_team_name(h.home_team_id or "")
-
         board.append({
-            "pitcher":       h.pitcher_name,
-            "opponent":      opp_name,
-            "game":          h.game_id,
+            "pitcher":       h_pitcher.pitcher_name,
+            "team":          get_team_abbrev(h_pitcher.team_id) or h_pitcher.team_id,
+            "opponent":      opponent_mb,
+            "game":          h_out.game_id,
             # ── Hits
-            "husi":          h.husi,
-            "husi_grade":    h.husi_grade,
-            "hits_line":     h.sportsbook_line,
-            "h_floor":       h.sim_p5_hits,
-            "h_median":      h.sim_median_hits,
-            "h_ceil":        h.sim_p95_hits,
-            "h_over_pct":    h.sim_over_pct_hits,
-            "h_under_pct":   h.sim_under_pct_hits,
+            "husi":          h_out.husi,
+            "husi_grade":    h_out.grade,
+            "hits_line":     h_out.line,
+            "h_floor":       h_out.sim_p5_hits,
+            "h_median":      h_out.sim_median_hits,
+            "h_ceil":        h_out.sim_p95_hits,
+            "h_over_pct":    h_out.sim_over_pct_hits,
+            "h_under_pct":   h_out.sim_under_pct_hits,
             "hits_color":    hits_color,
             # ── Ks
             "kusi":          k.kusi if k else None,
-            "kusi_grade":    k.kusi_grade if k else None,
-            "k_line":        k.sportsbook_line if k else None,
+            "kusi_grade":    k.grade if k else None,
+            "k_line":        k.line if k else None,
             "k_floor":       k.sim_p5_ks if k else None,
             "k_median":      k.sim_median_ks if k else None,
             "k_ceil":        k.sim_p95_ks if k else None,

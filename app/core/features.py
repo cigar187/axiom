@@ -167,11 +167,14 @@ class PitcherFeatureSet:
     pitcher_median_ks: Optional[float] = None     # used in K5 interaction
     relies_on_one_putaway: bool = False            # used in K2 interaction
 
-    # ── Season ERA Tier — direct HUSI penalty for struggling pitchers
-    # Source: season ERA from MLB Stats API (filled by feature_builder)
-    # HV10 triggers when ERA ≥ 5.00 — a pitcher giving up runs all season is a hit risk
-    season_era_raw: Optional[float] = None    # actual season ERA (e.g. 5.95)
-    season_era_tier: str = "NORMAL"           # NORMAL / STRUGGLING (5.00-5.99) / DISASTER (6.00+)
+    # ── Raw season stats used for direct suppressor calculations (not normalized)
+    season_gb_pct: Optional[float] = None         # raw GB% (e.g. 52.3) — drives GB suppressor multiplier in husi.py
+    season_swstr_pct: Optional[float] = None      # swinging strike rate % — direct KUSI input, feeds per_putw (Sarris)
+    season_hard_hit_pct: Optional[float] = None   # hard-hit rate % allowed — replaces ERA tier in HV10 (Tango/SABR)
+    hard_hit_tier: str = "NORMAL"                 # ELITE (<28%) / NORMAL (28-35%) / STRUGGLING (35-40%) / DISASTER (>40%)
+
+    # ── Season ERA — kept for reference/logging only, no longer drives a volatility penalty
+    season_era_raw: Optional[float] = None    # actual season ERA (informational only)
     lineup_discipline_score: Optional[float] = None  # used in K3 interaction
     weak_edge_command: bool = False                   # used in K7 interaction
     babip_variance_high: bool = False              # used in HV3
@@ -270,3 +273,43 @@ class PitcherFeatureSet:
     #   negative = traveled west (body clock ahead = less disruptive).
     # Used to apply directional TFI penalties (Merlin Circadian Travel Adjustment).
     tfi_signed_tz_shift: int = 0              # signed tz delta: + = eastward, - = westward
+
+    # ── Lineup Fluidity Score (0-100)
+    # Measures how likely the batting order is to CHANGE in late innings (TTO3).
+    # Derived from the K-rate spread between the top and bottom of the batting order:
+    #   Large spread (bottom batters strike out far more than top) = manager has strong
+    #     incentive to pinch-hit for weak slots in the 7th inning or later.
+    #   Small spread = balanced lineup = less lineup change pressure.
+    #
+    # Used by the simulation engine to apply a stochastic pinch-hitter multiplier
+    # in TTO3 runs — when a weak slot is replaced by a dangerous bench bat, the
+    # pitcher loses the easy-out advantage and projected hits increase slightly.
+    #
+    # Range: 0 (completely stable lineup, no easy outs to replace) to
+    #        100 (extremely top-heavy, manager will pinch-hit aggressively in TTO3).
+    lineup_fluidity_score: float = 50.0       # default neutral when lineup not confirmed
+
+    # ── SKU #39 — Swing Plane Collision Score (0-100)
+    # Measures the average "plane mismatch" between this pitcher's VAA and the
+    # opposing lineup's individual batter attack angles (from Baseball Savant bat-tracking).
+    #
+    # Physics: a pitch descends at |VAA|° below horizontal. A batter whose attack angle
+    # differs significantly from the "ideal matching angle" (|VAA| + 5°) cannot square
+    # the ball cleanly — producing pop-ups, grounders, or foul tips instead of barrels.
+    #
+    # Formula:
+    #   ideal_aa = |pitcher_vaa| + 5.0  (empirical offset, Eno Sarris / Statcast research)
+    #   mismatch_i = |batter_attack_angle_i - ideal_aa|
+    #   collision_score = clamp(50 + mean(mismatch) * 4.0, 0, 100)
+    #
+    # Score interpretation:
+    #   50 = neutral (average mismatch — lineup attack angles match pitcher's plane well)
+    #   70 = elevated advantage (avg 5° mismatch — soft contact tendency increases)
+    #   90 = strong advantage (avg 10° mismatch — physics heavily favors the pitcher)
+    #
+    # Wired to:
+    #   HUSI pcs_soft (PCS block, weight 0.16) — soft contact rate proxy
+    #   KUSI K9 interaction boost when collision > 70 AND VAA < -5.0°
+    #
+    # None when VAA is unavailable (pre-game without live feed) or lineup not confirmed.
+    swing_plane_collision_score: Optional[float] = None

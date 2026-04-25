@@ -284,6 +284,18 @@ class SimulationEngine:
         baserunner_samples = self.rng.poisson(bl2_lambda, self.n_runs)
         extension_flags    = self.rng.random(self.n_runs) < OLD_SCHOOL_EXTENSION_PROBABILITY
 
+        # ── Lineup fluidity: stochastic pinch-hitter effect in TTO3 runs
+        # When the batting order is top-heavy, managers replace weak bottom slots
+        # with dangerous bench bats in late innings. This removes the "easy out"
+        # advantage the formula assumed and slightly raises the hit projection.
+        # Probability scales with lineup_fluidity_score (0-100):
+        #   score=50 (neutral) → ~15% chance of lineup change in any given TTO3 run
+        #   score=80 (very top-heavy) → ~30% chance
+        #   score=20 (balanced lineup) → ~5% chance
+        flu_score = float(getattr(features, "lineup_fluidity_score", 50.0))
+        pinch_hit_prob = max(0.02, min(0.40, (flu_score / 100.0) * 0.40))
+        pinch_hit_flags = self.rng.random(self.n_runs) < pinch_hit_prob
+
         # Black Swan run categorization (pre-shuffled so distribution is uniform)
         n_god     = int(self.n_runs * GOD_MODE_FRAC)
         n_melt    = int(self.n_runs * MELTDOWN_FRAC)
@@ -348,7 +360,20 @@ class SimulationEngine:
                 proj_hits_i += resid_h_unit[i] * sigma_h
                 proj_ks_i   += resid_k_unit[i] * sigma_k
 
-                # F: Managerial Yank Constraint
+                # F: Late-inning lineup change (stochastic pinch-hitter effect)
+                # In TTO3 runs, managers replace weak bottom-of-order batters with
+                # dangerous bench bats. This removes the formula's assumed "easy out"
+                # advantage for top-heavy lineups and raises projected hits slightly.
+                # Only fires when: (1) the inning is TTO3 territory AND (2) the
+                # random draw hits the fluidity probability for this run.
+                if (
+                    run_ip >= 5.5               # TTO3 territory (pitcher faces lineup 3rd time)
+                    and bool(pinch_hit_flags[i]) # fluidity RNG triggered this run
+                    and mode != 1               # not God Mode — dominant pitchers neutralize PH
+                ):
+                    proj_hits_i *= 1.08   # 8% hit increase: easy out becomes a real at-bat
+
+                # G: Managerial Yank Constraint
                 # If this run is on a shelling pace (7+ hits in a full outing),
                 # the manager pulls the pitcher early. Ks are prorated to the
                 # actual innings worked — you cannot rack up Ks after the hook.

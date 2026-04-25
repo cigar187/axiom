@@ -9,6 +9,9 @@ Tables:
   - model_outputs_daily
   - backtest_results
   - umpire_profiles
+  - statcast_pitcher_cache
+  - axiom_pitcher_stats
+  - axiom_game_lineup
 """
 import uuid
 from datetime import date, datetime
@@ -459,3 +462,144 @@ class MLModelOutput(Base):
     mae_ks: Mapped[Optional[float]] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ─────────────────────────────────────────────────────────────
+# statcast_pitcher_cache
+# ─────────────────────────────────────────────────────────────
+# Every stat Axiom fetches from Baseball Savant is written here.
+# This is Axiom's insurance policy: if Baseball Savant goes down,
+# we fall back to this table. Over time it becomes our proprietary
+# historical Statcast dataset — no external dependency needed.
+# ─────────────────────────────────────────────────────────────
+class StatcastPitcherCache(Base):
+    __tablename__ = "statcast_pitcher_cache"
+    __table_args__ = (UniqueConstraint("pitcher_id", "season", name="uq_statcast_pitcher_season"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    pitcher_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    season: Mapped[str] = mapped_column(String(8), nullable=False)
+    player_name: Mapped[Optional[str]] = mapped_column(String(128))
+
+    # ── Statcast metrics (season-to-date at time of last fetch)
+    swstr_pct: Mapped[Optional[float]] = mapped_column(Float)
+    hard_hit_pct: Mapped[Optional[float]] = mapped_column(Float)
+    gb_pct: Mapped[Optional[float]] = mapped_column(Float)
+    innings_pitched: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── Provenance
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    data_source: Mapped[str] = mapped_column(String(32), default="baseball_savant")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ─────────────────────────────────────────────────────────────
+# axiom_pitcher_stats
+# ─────────────────────────────────────────────────────────────
+# Axiom's proprietary growing pitcher dataset.
+# Aggregates stats from ALL sources (MLB Stats API + Statcast + future)
+# into one canonical row per pitcher per season, updated daily by the pipeline.
+#
+# Over time this becomes Axiom's owned historical database:
+#   Year 1: mirrors external APIs
+#   Year 3: starts filling gaps external APIs miss
+#   Year 5+: becomes the primary source that external APIs supplement
+#
+# This is what makes Axiom defensible as a business.
+# ─────────────────────────────────────────────────────────────
+class AxiomPitcherStats(Base):
+    __tablename__ = "axiom_pitcher_stats"
+    __table_args__ = (UniqueConstraint("pitcher_id", "season", name="uq_axiom_pitcher_season"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    pitcher_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    season: Mapped[str] = mapped_column(String(8), nullable=False)
+    player_name: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    team_id: Mapped[Optional[str]] = mapped_column(String(32))
+
+    # ── MLB Stats API layer
+    season_era: Mapped[Optional[float]] = mapped_column(Float)
+    season_k_per_9: Mapped[Optional[float]] = mapped_column(Float)
+    season_h_per_9: Mapped[Optional[float]] = mapped_column(Float)
+    season_bb_per_9: Mapped[Optional[float]] = mapped_column(Float)
+    season_k_pct: Mapped[Optional[float]] = mapped_column(Float)
+    season_go_ao: Mapped[Optional[float]] = mapped_column(Float)
+    avg_ip_per_start: Mapped[Optional[float]] = mapped_column(Float)
+    mlb_service_years: Mapped[Optional[float]] = mapped_column(Float)
+    games_started: Mapped[Optional[int]] = mapped_column(Integer)
+    total_ip: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── Statcast layer
+    season_swstr_pct: Mapped[Optional[float]] = mapped_column(Float)
+    season_hard_hit_pct: Mapped[Optional[float]] = mapped_column(Float)
+    season_gb_pct: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── Axiom proprietary layer (our formula outputs — built by us, owned by us)
+    axiom_husi_avg: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_kusi_avg: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_husi_trend: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_kusi_trend: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_starts_scored: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # ── Data provenance timestamps
+    mlb_stats_last_updated: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    statcast_last_updated: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ─────────────────────────────────────────────────────────────
+# axiom_game_lineup — Axiom's proprietary batter vault
+#
+# Stores every batter's stats for every game we score.
+# This is Axiom's ownership of lineup data — if MLB Stats API
+# goes down we have historical lineup profiles to fall back on.
+#
+# Also powers lineup fluidity analysis: the K-rate spread between
+# the top and bottom of the batting order tells the simulation how
+# likely a manager is to pinch-hit in late innings (TTO3).
+# ─────────────────────────────────────────────────────────────
+class AxiomGameLineup(Base):
+    __tablename__ = "axiom_game_lineup"
+    __table_args__ = (
+        UniqueConstraint("game_id", "team_id", "batter_id", name="uq_game_team_batter"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    # ── Game context
+    game_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    team_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    game_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    season: Mapped[str] = mapped_column(String(8), nullable=False)
+    side: Mapped[Optional[str]] = mapped_column(String(8))  # "home" or "away"
+    lineup_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # ── Individual batter identity
+    batter_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    batter_name: Mapped[Optional[str]] = mapped_column(String(128))
+    batting_order: Mapped[Optional[int]] = mapped_column(Integer)  # 1-9 slot
+
+    # ── Season hitting stats (captured at game-day snapshot)
+    k_rate: Mapped[Optional[float]] = mapped_column(Float)       # strikeout rate per AB (%)
+    k_per_pa: Mapped[Optional[float]] = mapped_column(Float)     # strikeout rate per PA (%)
+    bb_rate: Mapped[Optional[float]] = mapped_column(Float)      # walk rate per PA (%)
+    avg: Mapped[Optional[float]] = mapped_column(Float)          # batting average
+    obp: Mapped[Optional[float]] = mapped_column(Float)          # on-base percentage
+    slg: Mapped[Optional[float]] = mapped_column(Float)          # slugging percentage
+    at_bats: Mapped[Optional[int]] = mapped_column(Integer)      # sample size
+
+    # ── SKU #39 — Swing Plane Collision: batter swing profile (Baseball Savant bat-tracking)
+    # Stored here for longitudinal analysis: over multiple seasons Axiom builds its own
+    # historical batter swing-profile dataset, independent of Baseball Savant availability.
+    avg_attack_angle: Mapped[Optional[float]] = mapped_column(Float)  # degrees, ideal 5-20°
+    swing_tilt: Mapped[Optional[float]] = mapped_column(Float)        # degrees, higher = steeper plane
+
+    # ── Axiom-computed lineup fluidity metrics (for simulation)
+    # lineup_slot_danger: normalized danger score for this batting slot (0-100).
+    # High score = this batter is dangerous = pitcher must work hard here.
+    # Used by the simulation to weight TTO3 pinch-hitter probability.
+    lineup_slot_danger: Mapped[Optional[float]] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

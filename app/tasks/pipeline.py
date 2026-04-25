@@ -17,7 +17,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.features import PitcherFeatureSet
@@ -26,7 +26,7 @@ from app.core.kusi import compute_kusi
 from app.core.simulation import SimulationEngine
 from app.models.models import (
     Game, ProbablePitcher, SportsbookProp,
-    PitcherFeaturesDaily, ModelOutputDaily, UmpireProfile,
+    PitcherFeaturesDaily, ModelOutputDaily, UmpireProfile, AxiomGameLineup,
 )
 from app.services.mlb_stats import MLBStatsAdapter
 from app.services.rundown import RundownAdapter
@@ -61,6 +61,24 @@ async def run_daily_pipeline(
 
     start_time = time.monotonic()
     log.info("Pipeline starting", date=str(target_date), dry_run=dry_run)
+
+    # ─────────────────────────────────────────────────────────
+    # Schema migrations — safe to run every time (IF NOT EXISTS)
+    # Any new column added to the ORM model gets added here so
+    # the database stays in sync without manual ALTER TABLE steps.
+    # ─────────────────────────────────────────────────────────
+    try:
+        from sqlalchemy import text
+        migrations = [
+            "ALTER TABLE axiom_game_lineup ADD COLUMN IF NOT EXISTS avg_attack_angle FLOAT",
+            "ALTER TABLE axiom_game_lineup ADD COLUMN IF NOT EXISTS swing_tilt FLOAT",
+        ]
+        for sql in migrations:
+            await db.execute(text(sql))
+        await db.commit()
+        log.info("Schema migrations applied", count=len(migrations))
+    except Exception as _mig_exc:
+        log.warning("Schema migration step failed (non-fatal)", error=str(_mig_exc))
 
     # ─────────────────────────────────────────────────────────
     # Step 1: Fetch MLB data
@@ -341,6 +359,61 @@ async def run_daily_pipeline(
         log.info("VAA data fetched", pitchers_with_vaa=len(vaa_by_pitcher))
 
     # ─────────────────────────────────────────────────────────
+    # Step 3f: Statcast pitcher data — SwStr%, HardHit%, actual GB%
+    # Baseball Savant is a free public endpoint (no API key).
+    # Fetches season-to-date stats and merges into pitchers_data BEFORE
+    # feature building so the feature builder sees the real values.
+    #
+    # Merges:
+    #   season_swstr_pct   → per_putw in KUSI (better than K/9)
+    #   season_hard_hit_pct → hard_hit_tier in HUSI HV10 penalty
+    #   season_gb_pct      → overrides GO/AO ratio with real GB% for HUSI suppressor
+    # ─────────────────────────────────────────────────────────
+    from app.services.statcast import (
+        fetch_and_cache_statcast_stats,
+        merge_statcast_into_pitchers,
+        update_axiom_pitcher_stats,
+        fetch_batter_swing_profiles,
+    )
+
+    statcast_data: dict[str, dict] = {}
+    try:
+        async with _httpx.AsyncClient() as sc_client:
+            # Cache-first: writes to our vault, reads from vault if Savant is down
+            statcast_data = await fetch_and_cache_statcast_stats(sc_client, db, season)
+        sc_matched = merge_statcast_into_pitchers(pitchers_data, statcast_data)
+        log.info("Statcast data merged",
+                 pitchers_matched=sc_matched,
+                 total=len(pitchers_data),
+                 source=next((v.get("source") for v in statcast_data.values()), "unknown"))
+    except Exception as exc:
+        log.warning("Statcast step failed (non-fatal) — stats fall back to MLB API values",
+                    error=str(exc))
+
+    # ── SKU #39 — Batter Swing Profiles (bat-tracking leaderboard)
+    # Fetched once per pipeline run and passed to every pitcher's feature builder.
+    # Enables Swing Plane Collision Score: compares pitcher VAA to each batter's
+    # attack angle to quantify how well the lineup can square this pitcher's plane.
+    swing_profiles: dict[str, dict] = {}
+    try:
+        async with _httpx.AsyncClient() as sp_client:
+            swing_profiles = await fetch_batter_swing_profiles(sp_client, int(season))
+        log.info("Batter swing profiles fetched", batters=len(swing_profiles))
+    except Exception as exc:
+        log.warning("Batter swing profiles fetch failed (non-fatal) — collision score will be None",
+                    error=str(exc))
+
+    # ── Always write to Axiom's proprietary data vault, regardless of Statcast success.
+    # MLB stats are always available (fetched in Step 1). Statcast fields are NULL
+    # when Savant was unavailable — but the MLB layer is still persisted so the vault
+    # grows every single pipeline run no matter what external APIs do.
+    try:
+        await update_axiom_pitcher_stats(db, pitchers_data, statcast_data, season)
+    except Exception as vault_exc:
+        log.warning("Axiom pitcher stats vault update failed (non-fatal)",
+                    error=str(vault_exc))
+
+    # ─────────────────────────────────────────────────────────
     # Step 4 + 5: Build features and score each pitcher
     # ─────────────────────────────────────────────────────────
     game_lookup = {g["game_id"]: g for g in games_data}
@@ -382,6 +455,7 @@ async def run_daily_pipeline(
                 catcher_framing=defending_catcher_framing,
                 travel_fatigue=tfi_by_team.get(str(own_team_id), {}),
                 vaa_data=vaa_by_pitcher.get(pid, {}),
+                swing_profiles=swing_profiles,
             )
             # Stamp the numeric team_id so the simulation can find the manager profile
             features.team_id_numeric = str(own_team_id)
@@ -451,7 +525,7 @@ async def run_daily_pipeline(
     # Step 6: Save to database
     # ─────────────────────────────────────────────────────────
     if not dry_run:
-        await _persist_results(db, target_date, games_data, pitchers_data, props, scored_pitchers)
+        await _persist_results(db, target_date, games_data, pitchers_data, props, scored_pitchers, lineup_data, season, swing_profiles)
         log.info("Pipeline results saved to database", count=len(scored_pitchers))
     else:
         log.info("Dry run — results NOT saved", count=len(scored_pitchers))
@@ -480,6 +554,9 @@ async def _persist_results(
     pitchers_data: dict,
     props: dict,
     scored_pitchers: list,
+    lineup_data: dict | None = None,
+    season: str = "",
+    swing_profiles: dict | None = None,
 ) -> None:
     """Upsert all scored data into the database."""
 
@@ -706,7 +783,7 @@ async def _persist_results(
                 risk_tier=risk_r.get("risk_tier", "LOW"),
                 risk_flags="|".join(risk_r.get("risk_flags", [])) or None,
                 combo_risk=risk_r.get("combo_risk", False),
-                season_era_tier=features.season_era_tier,
+                season_era_tier=features.hard_hit_tier,
                 park_extreme=features.park_extreme,
                 park_hits_multiplier=features.park_hits_multiplier,
                 # ── Merlin Simulation outputs (N=2000)
@@ -741,7 +818,7 @@ async def _persist_results(
                     "risk_tier": risk_r.get("risk_tier", "LOW"),
                     "risk_flags": "|".join(risk_r.get("risk_flags", [])) or None,
                     "combo_risk": risk_r.get("combo_risk", False),
-                    "season_era_tier": features.season_era_tier,
+                    "season_era_tier": features.hard_hit_tier,
                     "park_extreme": features.park_extreme,
                     "park_hits_multiplier": features.park_hits_multiplier,
                     # ── Simulation columns update on conflict
@@ -857,6 +934,76 @@ async def _persist_results(
 
         except Exception as ml_exc:
             log.warning("ML engine cycle failed (non-fatal)", error=str(ml_exc))
+
+    # ── Axiom Lineup Vault — store every batter's stats for every game we score
+    # This gives Axiom ownership of historical lineup data and powers the
+    # lineup fluidity analysis used by the simulation engine (TTO3 pinch-hitter model).
+    if lineup_data and season:
+        try:
+            batters_written = 0
+            for game_id, game_lineup in lineup_data.items():
+                lineup_confirmed = game_lineup.get("lineup_confirmed", False)
+                # Determine team_ids for this game from pitchers_data
+                game_team_ids: dict[str, str] = {}
+                for _pid, pd in pitchers_data.items():
+                    if pd.get("game_id") == game_id:
+                        side = pd.get("side", "")
+                        tid  = pd.get("team_id", "")
+                        if side and tid:
+                            game_team_ids[side] = tid
+
+                for side in ("home", "away"):
+                    batters = game_lineup.get(side, [])
+                    team_id = game_team_ids.get(side, "")
+                    for b in batters:
+                        batter_id = b.get("batter_id", "")
+                        if not batter_id:
+                            continue
+                        # Normalize danger: inverse of K rate (low K = dangerous contact hitter)
+                        # League avg K rate ~20%; 0% K rate → 100 danger, 40% → 0 danger
+                        k = b.get("k_rate", 20.0)
+                        slot_danger = round(max(0.0, min(100.0, (40.0 - k) / 40.0 * 100.0)), 2)
+                        # SKU #39 — swing profile from bat-tracking leaderboard
+                        sp_batter = (swing_profiles or {}).get(batter_id, {})
+                        stmt = pg_insert(AxiomGameLineup).values(
+                            game_id=game_id,
+                            team_id=team_id,
+                            game_date=target_date,
+                            season=season,
+                            side=side,
+                            lineup_confirmed=lineup_confirmed,
+                            batter_id=batter_id,
+                            batter_name=b.get("name"),
+                            batting_order=b.get("batting_order"),
+                            k_rate=b.get("k_rate"),
+                            k_per_pa=b.get("k_per_pa"),
+                            bb_rate=b.get("bb_rate"),
+                            avg=b.get("avg"),
+                            obp=b.get("obp"),
+                            slg=b.get("slg"),
+                            at_bats=b.get("ab"),
+                            lineup_slot_danger=slot_danger,
+                            avg_attack_angle=sp_batter.get("attack_angle"),
+                            swing_tilt=sp_batter.get("swing_tilt"),
+                        ).on_conflict_do_update(
+                            constraint="uq_game_team_batter",
+                            set_={
+                                "batting_order": b.get("batting_order"),
+                                "k_rate": b.get("k_rate"),
+                                "avg": b.get("avg"),
+                                "obp": b.get("obp"),
+                                "slg": b.get("slg"),
+                                "lineup_slot_danger": slot_danger,
+                                "avg_attack_angle": sp_batter.get("attack_angle"),
+                                "swing_tilt": sp_batter.get("swing_tilt"),
+                                "updated_at": func.now(),
+                            },
+                        )
+                        await db.execute(stmt)
+                        batters_written += 1
+            log.info("Axiom lineup vault updated", batters=batters_written, games=len(lineup_data))
+        except Exception as lineup_exc:
+            log.warning("Axiom lineup vault write failed (non-fatal)", error=str(lineup_exc))
 
 
 def _quality_flag(f: PitcherFeatureSet) -> str:
