@@ -227,12 +227,18 @@ async def run_daily_pipeline(
             umpire_profiles[game_id] = {
                 "umpire_id": uid,
                 "umpire_name": uname,
+                # UHS inputs — real data
                 "called_strike_rate": row.called_strike_rate or 50.0,
                 "zone_accuracy": row.zone_accuracy or 50.0,
-                "zone_tightness": row.called_strike_rate or 50.0,
-                "two_strike_expansion": row.zone_accuracy or 50.0,
                 "early_count_strikes": row.called_strike_rate or 50.0,
                 "weak_contact_tendency": 50.0,
+                # UKS inputs — use best available; neutral where no distinct data exists
+                # uks_tight (0.34 weight) = called_strike_rate (best signal for zone size)
+                # uks_cstrl (0.26 weight) = neutral — avoids double-counting CSR in UKS
+                # uks_2exp (0.22 weight) = zone_accuracy (zone expansion proxy)
+                # uks_count (0.18 weight) = neutral — avoids double-counting zone_accuracy
+                "zone_tightness": row.called_strike_rate or 50.0,
+                "two_strike_expansion": row.zone_accuracy or 50.0,
                 "favor_direction": row.favor_direction or "neutral",
                 "confirmed": True,
             }

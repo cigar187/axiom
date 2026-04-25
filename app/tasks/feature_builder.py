@@ -125,6 +125,7 @@ def build_features(
         pitcher_name=name,
         game_id=game_id,
         team=pitcher_data.get("team", ""),
+        team_id_numeric=str(pitcher_data.get("team_id", "") or ""),
         opponent=pitcher_data.get("opponent", ""),
         handedness=pitcher_data.get("handedness"),
         lineup_confirmed=pitcher_data.get("confirmed", False),
@@ -442,9 +443,9 @@ def build_features(
         f.uhs_early = ump_profile.get("early_count_strikes", 50.0)
         f.uhs_weak  = ump_profile.get("weak_contact_tendency", 50.0)
         f.uks_tight = ump_profile.get("zone_tightness", 50.0)
-        f.uks_cstrl = ump_profile.get("called_strike_rate", 50.0)
+        f.uks_cstrl = 50.0   # neutral — avoids double-counting CSR (already in uks_tight)
         f.uks_2exp  = ump_profile.get("two_strike_expansion", 50.0)
-        f.uks_count = ump_profile.get("early_count_strikes", 50.0)
+        f.uks_count = 50.0   # neutral — avoids double-counting zone_accuracy (already in uks_2exp)
     else:
         # All umpire features default to neutral until scraper is live (HV6/KV2 penalty will apply)
         f.umpire_confirmed = False
