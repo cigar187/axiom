@@ -99,6 +99,8 @@ def build_features(
     travel_fatigue: dict = None,
     vaa_data: dict = None,
     swing_profiles: dict = None,
+    oaa_data: dict = None,
+    arsenal_data: dict = None,
 ) -> PitcherFeatureSet:
     """
     Build a PitcherFeatureSet for one pitcher.
@@ -534,12 +536,51 @@ def build_features(
     f.kop_inj   = 60.0
     f.kop_fat   = 55.0   # overwritten by TFI block when travel data is available
 
-    # DSC: default neutral until defensive metric source connected
-    f.dsc_def    = 50.0  # TODO: team DRS / OAA from FanGraphs
-    f.dsc_infdef = 50.0
-    f.dsc_ofdef  = 50.0
-    f.dsc_catch  = 50.0
-    f.dsc_align  = 50.0
+    # ── DSC — Defense Score from Baseball Savant OAA (Outs Above Average)
+    # OAA measures actual fielding value: positive = above-average defense.
+    # League average is ~0 OAA. Elite teams run +30 to +50; poor teams -30 to -50.
+    # Higher defense = pitcher gets more outs on balls in play = better for hits under.
+    f.dsc_catch  = 50.0  # overwritten below after catcher_framing block
+    f.dsc_align  = 50.0  # no clean free source for shift data — leave neutral
+
+    oaa = oaa_data or {}
+    # OAA is keyed by team_id — use the team DEFENDING (fielding) behind this pitcher
+    defending_team_id = str(pitcher_data.get("team_id", "") or "")
+    team_oaa = oaa.get(defending_team_id, {})
+
+    if team_oaa and len(oaa) >= 20:
+        # Build league population lists for z-score normalization
+        all_oaa_total = [v["oaa_total"] for v in oaa.values() if v.get("oaa_total") is not None]
+        all_oaa_inf   = [v["oaa_inf"]   for v in oaa.values() if v.get("oaa_inf")   is not None]
+        all_oaa_of    = [v["oaa_of"]    for v in oaa.values() if v.get("oaa_of")    is not None]
+
+        if team_oaa.get("oaa_total") is not None and len(all_oaa_total) >= 20:
+            # Higher OAA = better defense = good for pitcher → normal direction
+            f.dsc_def = _zscore_score(team_oaa["oaa_total"], all_oaa_total, direction="normal")
+        else:
+            f.dsc_def = 50.0
+
+        if team_oaa.get("oaa_inf") is not None and len(all_oaa_inf) >= 20:
+            f.dsc_infdef = _zscore_score(team_oaa["oaa_inf"], all_oaa_inf, direction="normal")
+        else:
+            f.dsc_infdef = 50.0
+
+        if team_oaa.get("oaa_of") is not None and len(all_oaa_of) >= 20:
+            f.dsc_ofdef = _zscore_score(team_oaa["oaa_of"], all_oaa_of, direction="normal")
+        else:
+            f.dsc_ofdef = 50.0
+
+        log.info("DSC from OAA",
+                 pitcher=pitcher_data.get("pitcher_name"),
+                 team_id=defending_team_id,
+                 oaa_total=team_oaa.get("oaa_total"),
+                 dsc_def=round(f.dsc_def, 1),
+                 dsc_infdef=round(f.dsc_infdef, 1),
+                 dsc_ofdef=round(f.dsc_ofdef, 1))
+    else:
+        f.dsc_def    = 50.0
+        f.dsc_infdef = 50.0
+        f.dsc_ofdef  = 50.0
 
     # OWC fallbacks — only applied if real team stats were unavailable above
     if f.owc_babip    is None: f.owc_babip    = 50.0
@@ -550,13 +591,110 @@ def build_features(
     if f.owc_bot3     is None: f.owc_bot3     = 50.0
     if f.owc_topheavy is None: f.owc_topheavy = 50.0
 
-    # PMR defaults
-    f.pmr_p1   = 50.0   # TODO: primary pitch whiff rate
-    f.pmr_p2   = 50.0
-    f.pmr_put  = 50.0
-    f.pmr_run  = 50.0
-    f.pmr_top6 = 50.0
-    f.pmr_plat = 50.0
+    # ── PMR — Pitch Mix Rating
+    # ── pmr_p1 / pmr_p2 / pmr_put: from Baseball Savant pitch arsenal
+    # Whiff rate on primary/secondary/putaway pitch. Higher = more swing-and-miss
+    # on the pitches the pitcher actually throws → good for K pitcher → normal direction.
+    pid_str = str(pitcher_data.get("pitcher_id", "") or "")
+    ar = (arsenal_data or {}).get(pid_str, {})
+    if ar:
+        all_p1_whiff = [
+            v["p1_whiff"] for v in (arsenal_data or {}).values()
+            if v.get("p1_whiff") is not None
+        ]
+        all_p2_whiff = [
+            v["p2_whiff"] for v in (arsenal_data or {}).values()
+            if v.get("p2_whiff") is not None
+        ]
+        all_put_whiff = [
+            v["put_whiff"] for v in (arsenal_data or {}).values()
+            if v.get("put_whiff") is not None
+        ]
+
+        if ar.get("p1_whiff") is not None and len(all_p1_whiff) >= 3:
+            f.pmr_p1 = _zscore_score(ar["p1_whiff"], all_p1_whiff, direction="normal")
+        else:
+            f.pmr_p1 = 50.0
+
+        if ar.get("p2_whiff") is not None and len(all_p2_whiff) >= 3:
+            f.pmr_p2 = _zscore_score(ar["p2_whiff"], all_p2_whiff, direction="normal")
+        else:
+            f.pmr_p2 = 50.0
+
+        if ar.get("put_whiff") is not None and len(all_put_whiff) >= 3:
+            f.pmr_put = _zscore_score(ar["put_whiff"], all_put_whiff, direction="normal")
+        else:
+            f.pmr_put = 50.0
+
+        log.info("PMR arsenal wired",
+                 pitcher=name,
+                 p1=ar.get("p1_name"), p1_whiff=ar.get("p1_whiff"),
+                 put=ar.get("put_name"), put_whiff=ar.get("put_whiff"),
+                 pmr_p1=round(f.pmr_p1, 1), pmr_put=round(f.pmr_put, 1))
+    else:
+        f.pmr_p1  = 50.0
+        f.pmr_p2  = 50.0
+        f.pmr_put = 50.0
+
+    # ── pmr_run: opponent running game disrupts K counts.
+    # High stolen base rate = more stolen base attempts = more disrupted at-bats,
+    # broken counts, and focus shifts for the pitcher → bad for K total → reverse.
+    opp_sb_per_game = opp_stats.get("sb_per_game") if opp_stats else None
+    if opp_sb_per_game is not None and len(all_team_stats) >= 20:
+        all_sb = [t.get("sb_per_game", 0.0) for t in all_team_stats if t.get("sb_per_game") is not None]
+        if len(all_sb) >= 20:
+            f.pmr_run = _zscore_score(opp_sb_per_game, all_sb, direction="reverse")
+        else:
+            f.pmr_run = 50.0
+    else:
+        f.pmr_run = 50.0
+
+    # ── pmr_top6: top-6 K rate of opposing lineup.
+    # High K rate among top 6 batters = lineup strikes out a lot = pitcher can
+    # accumulate Ks through the order → good for K pitcher → normal direction.
+    # Wired from the same batter K rate data already computed for TLR above.
+    # opp_batters is already in scope from the TLR block.
+    if opp_batters:
+        k_rates_pmr = [b["k_rate"] for b in opp_batters if b.get("ab", 0) > 20]
+        if len(k_rates_pmr) >= 4:
+            top6_k_pmr = statistics.mean(k_rates_pmr[:min(6, len(k_rates_pmr))])
+            # League avg K rate 22%, std 7% → normalize: higher = more K-able = better for pitcher
+            z_top6 = (top6_k_pmr - 22.0) / 7.0
+            f.pmr_top6 = round(clamp(50.0 + 15.0 * z_top6), 2)
+        else:
+            f.pmr_top6 = 50.0
+    else:
+        f.pmr_top6 = 50.0
+
+    # ── pmr_plat: platoon advantage for this pitcher vs. opposing lineup.
+    # A pitcher benefits when facing opposite-handed batters (breaking balls break away).
+    #   RHP → wants to face LHB (platoon advantage)
+    #   LHP → wants to face RHB (platoon advantage)
+    # Switch hitters count as neutral (they match the pitcher's optimal side).
+    pitcher_hand = f.handedness  # "R" or "L" or None
+    if pitcher_hand and opp_batters:
+        batters_with_side = [b for b in opp_batters if b.get("bat_side")]
+        if batters_with_side:
+            total_sided = len(batters_with_side)
+            # Opposite-handed batter = pitcher platoon advantage
+            if pitcher_hand == "R":
+                opp_hand_count = sum(1 for b in batters_with_side if b["bat_side"] == "L")
+            else:  # LHP
+                opp_hand_count = sum(1 for b in batters_with_side if b["bat_side"] == "R")
+            # Switch hitters split evenly — count as 0.5 each
+            switch_count = sum(1 for b in batters_with_side if b["bat_side"] == "S")
+            effective_opp = opp_hand_count + switch_count * 0.5
+            plat_ratio = effective_opp / total_sided  # 0.0 = all same-hand, 1.0 = all opposite
+            # Scale: 0% opp-hand → 35 (disadvantage), 50% → 50 (neutral), 100% → 70 (big advantage)
+            f.pmr_plat = round(clamp(35.0 + plat_ratio * 35.0), 2)
+            log.info("PMR platoon wired",
+                     pitcher=name, hand=pitcher_hand,
+                     opp_hand=opp_hand_count, switch=switch_count,
+                     total=total_sided, pmr_plat=f.pmr_plat)
+        else:
+            f.pmr_plat = 50.0
+    else:
+        f.pmr_plat = 50.0
 
     # PER remaining defaults (computed where a non-overlapping signal exists)
     # per_ppa: pitching efficiency (pitches per at-bat).

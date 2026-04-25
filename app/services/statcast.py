@@ -313,6 +313,157 @@ async def fetch_batter_swing_profiles(
 
 
 # ─────────────────────────────────────────────────────────────
+# DSC — Team Outs Above Average (Baseball Savant OAA leaderboard)
+# ─────────────────────────────────────────────────────────────
+
+async def fetch_team_oaa(
+    client: httpx.AsyncClient,
+    year: int,
+) -> dict[str, dict]:
+    """
+    Fetch team-level Outs Above Average (OAA) from Baseball Savant.
+
+    OAA measures how many outs a team's defense converts beyond expectation,
+    based on the difficulty of each fielding opportunity. Positive = elite defense.
+
+    Used to populate DSC block:
+      dsc_def    ← overall team OAA
+      dsc_infdef ← infield OAA
+      dsc_ofdef  ← outfield OAA
+
+    Returns:
+        Dict keyed by MLB team_id (str):
+        {
+            "oaa_total":   float | None,   # overall OAA (+ = above average)
+            "oaa_inf":     float | None,   # infield OAA
+            "oaa_of":      float | None,   # outfield OAA
+            "team_name":   str
+        }
+    """
+    url = (
+        f"{SAVANT_BASE}/leaderboard/outs_above_average"
+        f"?type=Fielding&startYear={year}&endYear={year}"
+        f"&split=no&team=yes&csv=true"
+    )
+
+    log.info("Team OAA fetch starting", year=year)
+    try:
+        resp = await client.get(url, timeout=25.0, follow_redirects=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Team OAA fetch failed", year=year, error=str(exc))
+        return {}
+
+    result: dict[str, dict] = {}
+    reader = csv.DictReader(io.StringIO(resp.text))
+
+    for row in reader:
+        # Baseball Savant team OAA CSV uses numeric team_id
+        team_id = (row.get("team_id") or row.get("teamId") or "").strip()
+        if not team_id:
+            continue
+        result[team_id] = {
+            "oaa_total": _safe_float(
+                row.get("outs_above_average") or row.get("oaa")
+            ),
+            "oaa_inf": _safe_float(
+                row.get("outs_above_average_inf") or row.get("oaa_inf")
+            ),
+            "oaa_of": _safe_float(
+                row.get("outs_above_average_of") or row.get("oaa_of")
+            ),
+            "team_name": (row.get("team_name") or row.get("name") or "").strip(),
+        }
+
+    log.info("Team OAA parsed", year=year, teams=len(result))
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# PMR — Pitch Arsenal (Baseball Savant pitch-type stats)
+# ─────────────────────────────────────────────────────────────
+
+async def fetch_pitch_arsenal(
+    client: httpx.AsyncClient,
+    year: int,
+) -> dict[str, dict]:
+    """
+    Fetch per-pitcher pitch arsenal stats from Baseball Savant.
+
+    Each pitcher has multiple rows — one per pitch type they throw.
+    We aggregate into: primary pitch (highest usage), secondary pitch,
+    and putaway pitch (highest whiff rate among pitches thrown ≥5% of the time).
+
+    Used to populate PMR block:
+      pmr_p1  ← whiff% of primary pitch (by usage)
+      pmr_p2  ← whiff% of secondary pitch (by usage)
+      pmr_put ← whiff% of true putaway pitch (highest whiff%, ≥5% usage threshold)
+
+    Returns:
+        Dict keyed by pitcher_id (str):
+        {
+            "p1_whiff":  float | None,   # primary pitch whiff rate (%)
+            "p2_whiff":  float | None,   # secondary pitch whiff rate (%)
+            "put_whiff": float | None,   # putaway pitch whiff rate (%)
+            "p1_name":   str,            # e.g. "4-Seam Fastball"
+            "put_name":  str,            # e.g. "Slider"
+        }
+    """
+    url = (
+        f"{SAVANT_BASE}/leaderboard/pitch-arsenal-stats"
+        f"?type=pitcher&pitchType=&year={year}&team=&min=10&csv=true"
+    )
+
+    log.info("Pitch arsenal fetch starting", year=year)
+    try:
+        resp = await client.get(url, timeout=25.0, follow_redirects=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Pitch arsenal fetch failed", year=year, error=str(exc))
+        return {}
+
+    # First pass: collect all pitch rows per pitcher
+    raw: dict[str, list[dict]] = {}
+    reader = csv.DictReader(io.StringIO(resp.text))
+
+    for row in reader:
+        pid = (row.get("pitcher") or row.get("player_id") or "").strip()
+        if not pid:
+            continue
+        usage = _safe_float(row.get("percent") or row.get("pitch_percent")) or 0.0
+        whiff = _safe_float(row.get("whiff_percent") or row.get("whiff_pct")) or 0.0
+        pitch_name = (row.get("pitch_name") or row.get("pitch_type_name") or "").strip()
+
+        raw.setdefault(pid, []).append({
+            "pitch_name": pitch_name,
+            "usage":      usage,
+            "whiff":      whiff,
+        })
+
+    # Second pass: aggregate per pitcher
+    result: dict[str, dict] = {}
+    for pid, pitches in raw.items():
+        if not pitches:
+            continue
+        # Sort by usage descending
+        by_usage = sorted(pitches, key=lambda p: p["usage"], reverse=True)
+        # Putaway pitch = highest whiff among pitches thrown ≥5% of the time
+        eligible = [p for p in pitches if p["usage"] >= 5.0]
+        putaway = max(eligible, key=lambda p: p["whiff"]) if eligible else None
+
+        result[pid] = {
+            "p1_whiff":  by_usage[0]["whiff"] if len(by_usage) >= 1 else None,
+            "p2_whiff":  by_usage[1]["whiff"] if len(by_usage) >= 2 else None,
+            "put_whiff": putaway["whiff"] if putaway else None,
+            "p1_name":   by_usage[0]["pitch_name"] if by_usage else "",
+            "put_name":  putaway["pitch_name"] if putaway else "",
+        }
+
+    log.info("Pitch arsenal parsed", year=year, pitchers=len(result))
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────
 

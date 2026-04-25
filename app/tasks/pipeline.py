@@ -380,6 +380,8 @@ async def run_daily_pipeline(
         merge_statcast_into_pitchers,
         update_axiom_pitcher_stats,
         fetch_batter_swing_profiles,
+        fetch_team_oaa,
+        fetch_pitch_arsenal,
     )
 
     statcast_data: dict[str, dict] = {}
@@ -397,9 +399,6 @@ async def run_daily_pipeline(
                     error=str(exc))
 
     # ── SKU #39 — Batter Swing Profiles (bat-tracking leaderboard)
-    # Fetched once per pipeline run and passed to every pitcher's feature builder.
-    # Enables Swing Plane Collision Score: compares pitcher VAA to each batter's
-    # attack angle to quantify how well the lineup can square this pitcher's plane.
     swing_profiles: dict[str, dict] = {}
     try:
         async with _httpx.AsyncClient() as sp_client:
@@ -407,6 +406,26 @@ async def run_daily_pipeline(
         log.info("Batter swing profiles fetched", batters=len(swing_profiles))
     except Exception as exc:
         log.warning("Batter swing profiles fetch failed (non-fatal) — collision score will be None",
+                    error=str(exc))
+
+    # ── DSC — Team OAA (Outs Above Average) for dsc_def / dsc_infdef / dsc_ofdef
+    oaa_data: dict[str, dict] = {}
+    try:
+        async with _httpx.AsyncClient() as oaa_client:
+            oaa_data = await fetch_team_oaa(oaa_client, int(season))
+        log.info("Team OAA fetched", teams=len(oaa_data))
+    except Exception as exc:
+        log.warning("Team OAA fetch failed (non-fatal) — DSC defense stays neutral",
+                    error=str(exc))
+
+    # ── PMR — Pitch Arsenal (whiff rates per pitch type for pmr_p1/p2/put)
+    arsenal_data: dict[str, dict] = {}
+    try:
+        async with _httpx.AsyncClient() as ar_client:
+            arsenal_data = await fetch_pitch_arsenal(ar_client, int(season))
+        log.info("Pitch arsenal fetched", pitchers=len(arsenal_data))
+    except Exception as exc:
+        log.warning("Pitch arsenal fetch failed (non-fatal) — PMR p1/p2/put stay neutral",
                     error=str(exc))
 
     # ── Always write to Axiom's proprietary data vault, regardless of Statcast success.
@@ -462,6 +481,8 @@ async def run_daily_pipeline(
                 travel_fatigue=tfi_by_team.get(str(own_team_id), {}),
                 vaa_data=vaa_by_pitcher.get(pid, {}),
                 swing_profiles=swing_profiles,
+                oaa_data=oaa_data,
+                arsenal_data=arsenal_data,
             )
             # Stamp the numeric team_id so the simulation can find the manager profile
             features.team_id_numeric = str(own_team_id)

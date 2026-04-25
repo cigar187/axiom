@@ -426,10 +426,16 @@ class MLBStatsAdapter(BaseProvider):
                             k = int(stat.get("strikeOuts") or 0)
                             bb = int(stat.get("baseOnBalls") or 0)
 
+                            bat_side = (
+                                pdata.get("person", {})
+                                     .get("batSide", {})
+                                     .get("code")
+                            )
                             batter_records.append({
                                 "batter_id": str(bid),
                                 "name": name,
                                 "batting_order": batting_order,
+                                "bat_side": bat_side,   # "R", "L", "S" (switch) or None
                                 "k_rate": round(k / ab * 100, 2) if ab else 20.0,
                                 "k_per_pa": round(k / pa * 100, 2) if pa else 20.0,
                                 "bb_rate": round(bb / pa * 100, 2) if pa else 8.0,
@@ -444,6 +450,7 @@ class MLBStatsAdapter(BaseProvider):
                             batter_records.append({
                                 "batter_id": str(bid), "name": name,
                                 "batting_order": batting_order,
+                                "bat_side": None,
                                 "k_rate": 20.0, "k_per_pa": 20.0,
                                 "bb_rate": 8.0, "avg": 0.250,
                                 "obp": 0.320, "slg": 0.400, "ab": 0,
@@ -502,6 +509,8 @@ class MLBStatsAdapter(BaseProvider):
                                 k = int(s.get("strikeOuts") or 0)
                                 hits = int(s.get("hits") or 0)
                                 bb = int(s.get("baseOnBalls") or 0)
+                                sb = int(s.get("stolenBases") or 0)
+                                gp = int(s.get("gamesPlayed") or 1) or 1
                                 pa = ab + bb
                                 team_stats[tid] = {
                                     "team_id": tid,
@@ -513,6 +522,7 @@ class MLBStatsAdapter(BaseProvider):
                                     "slg": self._safe_float(s.get("slg")) or 0.400,
                                     "bb_rate": round(bb / pa * 100, 2) if pa else 8.0,
                                     "hits_per_pa": round(hits / pa, 4) if pa else 0.25,
+                                    "sb_per_game": round(sb / gp, 3),  # stolen base rate per game
                                     "at_bats": ab,
                                 }
                     except Exception as exc:
