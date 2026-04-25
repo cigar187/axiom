@@ -82,6 +82,31 @@ async def pitchers_today(
     )
     rows = (await db.execute(stmt)).all()
 
+    # Permanent fix: if today has no data (common after midnight UTC / 7 PM Eastern),
+    # fall back to the most recent date that has scored pitchers.
+    # This prevents the report from going empty just because the UTC clock rolled over.
+    if not rows and not target_date:
+        fallback_stmt = (
+            select(ModelOutputDaily.game_date)
+            .order_by(ModelOutputDaily.game_date.desc())
+            .limit(1)
+        )
+        fallback_result = await db.execute(fallback_stmt)
+        fallback_date = fallback_result.scalar()
+        if fallback_date and fallback_date != query_date:
+            query_date = fallback_date
+            stmt = (
+                select(ModelOutputDaily, ProbablePitcher, Game)
+                .join(ProbablePitcher, and_(
+                    ModelOutputDaily.pitcher_id == ProbablePitcher.pitcher_id,
+                    ModelOutputDaily.game_id == ProbablePitcher.game_id,
+                ))
+                .join(Game, ModelOutputDaily.game_id == Game.game_id)
+                .where(ModelOutputDaily.game_date == query_date)
+                .order_by(ModelOutputDaily.husi.desc())
+            )
+            rows = (await db.execute(stmt)).all()
+
     if not rows:
         return PitchersTodayResponse(
             date=query_date,
@@ -489,6 +514,110 @@ async def run_daily_task(
             f"Scoring pitchers for {target_date}. "
             "Results will be available at GET /v1/pitchers/today in 3-8 minutes."
         ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# /v1/reports/merlin-board
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/reports/merlin-board", tags=["Reports"])
+async def merlin_board(
+    target_date: Optional[date] = Query(default=None, description="Date (YYYY-MM-DD). Defaults to today."),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    The Merlin Board — combined hits + Ks report with simulation spreads.
+
+    Returns every starter for the day sorted by HUSI (best hit suppression first),
+    with formula scores, grades, and simulation floor/median/ceiling for both props.
+
+    Color tier logic (for display clients):
+      Hits:  GREEN = HUSI >= 57 (A/A+)  |  YELLOW = HUSI 45-57 (B/C)  |  RED = HUSI < 45 (D)
+      Ks:    GREEN = K-CEIL >= 9.0      |  YELLOW = K-CEIL 7.0-9.0    |  RED = K-CEIL < 7.0
+    """
+    td = target_date or date.today()
+    result = await db.execute(
+        select(ModelOutputDaily)
+        .where(
+            ModelOutputDaily.game_date == td,
+            ModelOutputDaily.market_type == "hits",
+        )
+        .order_by(ModelOutputDaily.husi.desc().nullslast())
+    )
+    hits_rows = result.scalars().all()
+
+    # Pull matching K rows for same pitchers
+    k_result = await db.execute(
+        select(ModelOutputDaily)
+        .where(
+            ModelOutputDaily.game_date == td,
+            ModelOutputDaily.market_type == "strikeouts",
+        )
+    )
+    k_rows_by_pitcher = {r.pitcher_id: r for r in k_result.scalars().all()}
+
+    from app.utils.teams import get_team_abbrev, get_team_name
+
+    board = []
+    for h in hits_rows:
+        k = k_rows_by_pitcher.get(h.pitcher_id)
+
+        # Color tier for hits side
+        husi_val = h.husi or 0.0
+        if husi_val >= 57:
+            hits_color = "GREEN"
+        elif husi_val >= 45:
+            hits_color = "YELLOW"
+        else:
+            hits_color = "RED"
+
+        # Color tier for K side
+        k_ceil = (k.sim_p95_ks if k else None) or 0.0
+        if k_ceil >= 9.0:
+            ks_color = "GREEN"
+        elif k_ceil >= 7.0:
+            ks_color = "YELLOW"
+        else:
+            ks_color = "RED"
+
+        opp_name = get_team_name(h.away_team_id or "") if h.home_away == "home" else get_team_name(h.home_team_id or "")
+
+        board.append({
+            "pitcher":       h.pitcher_name,
+            "opponent":      opp_name,
+            "game":          h.game_id,
+            # ── Hits
+            "husi":          h.husi,
+            "husi_grade":    h.husi_grade,
+            "hits_line":     h.sportsbook_line,
+            "h_floor":       h.sim_p5_hits,
+            "h_median":      h.sim_median_hits,
+            "h_ceil":        h.sim_p95_hits,
+            "h_over_pct":    h.sim_over_pct_hits,
+            "h_under_pct":   h.sim_under_pct_hits,
+            "hits_color":    hits_color,
+            # ── Ks
+            "kusi":          k.kusi if k else None,
+            "kusi_grade":    k.kusi_grade if k else None,
+            "k_line":        k.sportsbook_line if k else None,
+            "k_floor":       k.sim_p5_ks if k else None,
+            "k_median":      k.sim_median_ks if k else None,
+            "k_ceil":        k.sim_p95_ks if k else None,
+            "k_over_pct":    k.sim_over_pct_ks if k else None,
+            "k_under_pct":   k.sim_under_pct_ks if k else None,
+            "ks_color":      ks_color,
+            "kill_streak_prob": k.sim_kill_streak_prob if k else None,
+        })
+
+    return {
+        "date":    str(td),
+        "count":   len(board),
+        "board":   board,
+        "legend": {
+            "hits_color":  "GREEN=strong Under (HUSI>=57) | YELLOW=neutral | RED=risky",
+            "ks_color":    "GREEN=K Over potential (ceil>=9) | YELLOW=moderate | RED=low",
+        },
     }
 
 

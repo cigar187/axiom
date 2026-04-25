@@ -353,18 +353,25 @@ def compute_kusi_volatility(f: PitcherFeatureSet, silent: bool = False) -> float
 
 def kusi_grade(score: float) -> str:
     """
-    Grade thresholds are calibrated to the current data reality.
-    Many features (prop lines, umpire, bullpen) default to neutral (50)
-    when unavailable, compressing scores toward 50. As data matures
-    and more sources are live, these thresholds will move upward.
+    Grade thresholds anchored to real MLB pitcher distributions — NOT a 0-100 fantasy scale.
+
+    In modern baseball no starter realistically scores 80+ on KUSI. An elite K arm
+    in a favorable matchup lands in the 58-68 range. Thresholds are set against
+    what real pitchers actually achieve:
+
+      A+  ≥ 58  — Elite K matchup (top ~10%): think Skenes, Williams vs. weak lineup
+      A   ≥ 52  — Very favorable (top ~25%): above-average K arm, soft opponent
+      B   ≥ 46  — Above average (top ~45%): solid K upside, manageable matchup
+      C   ≥ 40  — Neutral (middle third): could go either way
+      D   < 40  — Unfavorable: contact lineup, limited K upside
     """
-    if score >= 62:
+    if score >= 58:
         return "A+"
-    elif score >= 57:
-        return "A"
     elif score >= 52:
+        return "A"
+    elif score >= 46:
         return "B"
-    elif score >= 47:
+    elif score >= 40:
         return "C"
     else:
         return "D"

@@ -407,18 +407,25 @@ def compute_husi_volatility(
 
 def husi_grade(score: float) -> str:
     """
-    Grade thresholds are calibrated to the current data reality.
-    Many features (prop lines, umpire, bullpen) default to neutral (50)
-    when unavailable, compressing scores toward 50. As data matures
-    and more sources are live, these thresholds will move upward.
+    Grade thresholds anchored to real MLB pitcher distributions — NOT a 0-100 fantasy scale.
+
+    In modern baseball no starter realistically scores 85+ on HUSI. An ace in a
+    pitcher-friendly park against a weak lineup lands in the 65-75 range. Thresholds
+    are set against what real pitchers actually achieve:
+
+      A+  ≥ 65  — Elite hit suppression (top ~10%): Peralta, Skenes vs. weak lineup
+      A   ≥ 58  — Very favorable (top ~25%): solid suppression, good matchup
+      B   ≥ 52  — Above average (top ~45%): expect below-average hits allowed
+      C   ≥ 46  — Neutral (middle third): average start expected
+      D   < 46  — Risky: expect elevated hits, fade for Under props
     """
-    if score >= 62:
+    if score >= 65:
         return "A+"
-    elif score >= 57:
+    elif score >= 58:
         return "A"
     elif score >= 52:
         return "B"
-    elif score >= 47:
+    elif score >= 46:
         return "C"
     else:
         return "D"

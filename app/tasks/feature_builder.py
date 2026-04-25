@@ -209,12 +209,11 @@ def build_features(
         opp_contact_rate = opp_stats.get("contact_rate", 75.0)
         opp_bb_rate = opp_stats.get("bb_rate", 8.0)
 
-        # Low opponent K rate = they make more contact = GOOD for K under → reverse
-        f.ocr_k = _zscore_score(opp_k_rate, all_k_rates, direction="reverse")
-        # High contact rate = good for K under → normal direction
-        f.ocr_con = _zscore_score(opp_contact_rate, all_contact_rates, direction="normal")
-        # Low walk rate = less disciplined, swings more = could go either way
-        # Higher BB rate = more patient = harder to K = bad for K under → reverse
+        # High opponent K rate = lineup strikes out a lot = EASY to K = good for pitcher
+        f.ocr_k = _zscore_score(opp_k_rate, all_k_rates, direction="normal")
+        # High contact rate = lineup puts ball in play = HARD to K = bad for pitcher
+        f.ocr_con = _zscore_score(opp_contact_rate, all_contact_rates, direction="reverse")
+        # Higher BB rate = more patient = harder to K = bad for pitcher
         f.ocr_disc = _zscore_score(opp_bb_rate, all_bb_rates, direction="reverse")
 
         log.info("OCR from opponent hitting stats",
