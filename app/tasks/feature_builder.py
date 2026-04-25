@@ -135,6 +135,11 @@ def build_features(
         bullpen_data_available=bool(pitcher_data.get("bullpen_logs")),
     )
 
+    # opp_batters is populated in the TLR block from lineup_data.
+    # Initialize here so PMR (platoon/top6) and SKU #39 (swing plane) can safely
+    # reference it before TLR runs — TLR will overwrite with real data if available.
+    opp_batters: list = []
+
     # ── Raw season stats
     f.season_hits_per_9 = pitcher_data.get("season_hits_per_9")
     f.season_k_per_9 = pitcher_data.get("season_k_per_9")
@@ -543,6 +548,9 @@ def build_features(
     # Higher defense = pitcher gets more outs on balls in play = better for hits under.
     f.dsc_catch  = 50.0  # overwritten below after catcher_framing block
 
+    # OAA and sprint speed both key on the defending team's ID — define once up front
+    defending_team_id = str(pitcher_data.get("team_id", "") or "")
+
     # ── dsc_align: team sprint speed as alignment proxy.
     # Faster defenders can play optimal positioning and still recover — distinct
     # from OAA (which measures outcomes) and measured in ft/sec (27.0 = league avg).
@@ -560,8 +568,6 @@ def build_features(
         f.dsc_align = 50.0
 
     oaa = oaa_data or {}
-    # OAA is keyed by team_id — use the team DEFENDING (fielding) behind this pitcher
-    defending_team_id = str(pitcher_data.get("team_id", "") or "")
     team_oaa = oaa.get(defending_team_id, {})
 
     if team_oaa and len(oaa) >= 20:
@@ -665,52 +671,9 @@ def build_features(
     else:
         f.pmr_run = 50.0
 
-    # ── pmr_top6: top-6 K rate of opposing lineup.
-    # High K rate among top 6 batters = lineup strikes out a lot = pitcher can
-    # accumulate Ks through the order → good for K pitcher → normal direction.
-    # Wired from the same batter K rate data already computed for TLR above.
-    # opp_batters is already in scope from the TLR block.
-    if opp_batters:
-        k_rates_pmr = [b["k_rate"] for b in opp_batters if b.get("ab", 0) > 20]
-        if len(k_rates_pmr) >= 4:
-            top6_k_pmr = statistics.mean(k_rates_pmr[:min(6, len(k_rates_pmr))])
-            # League avg K rate 22%, std 7% → normalize: higher = more K-able = better for pitcher
-            z_top6 = (top6_k_pmr - 22.0) / 7.0
-            f.pmr_top6 = round(clamp(50.0 + 15.0 * z_top6), 2)
-        else:
-            f.pmr_top6 = 50.0
-    else:
-        f.pmr_top6 = 50.0
-
-    # ── pmr_plat: platoon advantage for this pitcher vs. opposing lineup.
-    # A pitcher benefits when facing opposite-handed batters (breaking balls break away).
-    #   RHP → wants to face LHB (platoon advantage)
-    #   LHP → wants to face RHB (platoon advantage)
-    # Switch hitters count as neutral (they match the pitcher's optimal side).
-    pitcher_hand = f.handedness  # "R" or "L" or None
-    if pitcher_hand and opp_batters:
-        batters_with_side = [b for b in opp_batters if b.get("bat_side")]
-        if batters_with_side:
-            total_sided = len(batters_with_side)
-            # Opposite-handed batter = pitcher platoon advantage
-            if pitcher_hand == "R":
-                opp_hand_count = sum(1 for b in batters_with_side if b["bat_side"] == "L")
-            else:  # LHP
-                opp_hand_count = sum(1 for b in batters_with_side if b["bat_side"] == "R")
-            # Switch hitters split evenly — count as 0.5 each
-            switch_count = sum(1 for b in batters_with_side if b["bat_side"] == "S")
-            effective_opp = opp_hand_count + switch_count * 0.5
-            plat_ratio = effective_opp / total_sided  # 0.0 = all same-hand, 1.0 = all opposite
-            # Scale: 0% opp-hand → 35 (disadvantage), 50% → 50 (neutral), 100% → 70 (big advantage)
-            f.pmr_plat = round(clamp(35.0 + plat_ratio * 35.0), 2)
-            log.info("PMR platoon wired",
-                     pitcher=name, hand=pitcher_hand,
-                     opp_hand=opp_hand_count, switch=switch_count,
-                     total=total_sided, pmr_plat=f.pmr_plat)
-        else:
-            f.pmr_plat = 50.0
-    else:
-        f.pmr_plat = 50.0
+    # pmr_top6 and pmr_plat require opp_batters — wired after the TLR block below.
+    f.pmr_top6 = 50.0
+    f.pmr_plat = 50.0
 
     # PER remaining defaults (computed where a non-overlapping signal exists)
     # per_ppa: pitching efficiency (pitches per at-bat).
@@ -827,6 +790,43 @@ def build_features(
             f.tlr_top4k = f.tlr_top6c = f.tlr_vet = f.tlr_top2 = 50.0
     else:
         f.tlr_top4k = f.tlr_top6c = f.tlr_vet = f.tlr_top2 = 50.0
+
+    # ── pmr_top6: top-6 K rate of opposing lineup (wired here — opp_batters now populated)
+    # High K rate among top 6 batters = lineup strikes out a lot = pitcher can
+    # accumulate Ks through the order → good for K pitcher → normal direction.
+    if opp_batters:
+        k_rates_pmr = [b["k_rate"] for b in opp_batters if b.get("ab", 0) > 20]
+        if len(k_rates_pmr) >= 4:
+            top6_k_pmr = statistics.mean(k_rates_pmr[:min(6, len(k_rates_pmr))])
+            z_top6 = (top6_k_pmr - 22.0) / 7.0
+            f.pmr_top6 = round(clamp(50.0 + 15.0 * z_top6), 2)
+        # else: stays 50.0 from placeholder above
+    # else: stays 50.0 from placeholder above
+
+    # ── pmr_plat: platoon advantage for this pitcher vs. opposing lineup.
+    # A pitcher benefits when facing opposite-handed batters (breaking balls break away).
+    #   RHP → wants to face LHB (platoon advantage)
+    #   LHP → wants to face RHB (platoon advantage)
+    # Switch hitters count as neutral (they match the pitcher's optimal side).
+    pitcher_hand = f.handedness  # "R" or "L" or None
+    if pitcher_hand and opp_batters:
+        batters_with_side = [b for b in opp_batters if b.get("bat_side")]
+        if batters_with_side:
+            total_sided = len(batters_with_side)
+            if pitcher_hand == "R":
+                opp_hand_count = sum(1 for b in batters_with_side if b["bat_side"] == "L")
+            else:
+                opp_hand_count = sum(1 for b in batters_with_side if b["bat_side"] == "R")
+            switch_count = sum(1 for b in batters_with_side if b["bat_side"] == "S")
+            effective_opp = opp_hand_count + switch_count * 0.5
+            plat_ratio = effective_opp / total_sided
+            f.pmr_plat = round(clamp(35.0 + plat_ratio * 35.0), 2)
+            log.info("PMR platoon wired",
+                     pitcher=name, hand=pitcher_hand,
+                     opp_hand=opp_hand_count, switch=switch_count,
+                     total=total_sided, pmr_plat=f.pmr_plat)
+        # else: stays 50.0
+    # else: stays 50.0
 
     # Fly-ball suppression
     f.fly_ball_suppression = 100.0 - (f.pcs_gb or 50.0)  # inverse of GB score
