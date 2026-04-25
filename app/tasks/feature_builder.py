@@ -101,6 +101,7 @@ def build_features(
     swing_profiles: dict = None,
     oaa_data: dict = None,
     arsenal_data: dict = None,
+    sprint_speed_data: dict = None,
 ) -> PitcherFeatureSet:
     """
     Build a PitcherFeatureSet for one pitcher.
@@ -541,7 +542,22 @@ def build_features(
     # League average is ~0 OAA. Elite teams run +30 to +50; poor teams -30 to -50.
     # Higher defense = pitcher gets more outs on balls in play = better for hits under.
     f.dsc_catch  = 50.0  # overwritten below after catcher_framing block
-    f.dsc_align  = 50.0  # no clean free source for shift data — leave neutral
+
+    # ── dsc_align: team sprint speed as alignment proxy.
+    # Faster defenders can play optimal positioning and still recover — distinct
+    # from OAA (which measures outcomes) and measured in ft/sec (27.0 = league avg).
+    ss = (sprint_speed_data or {}).get(defending_team_id, {})
+    if ss and ss.get("sprint_speed") is not None:
+        all_ss = [
+            v["sprint_speed"] for v in (sprint_speed_data or {}).values()
+            if v.get("sprint_speed") is not None
+        ]
+        if len(all_ss) >= 20:
+            f.dsc_align = _zscore_score(ss["sprint_speed"], all_ss, direction="normal")
+        else:
+            f.dsc_align = 50.0
+    else:
+        f.dsc_align = 50.0
 
     oaa = oaa_data or {}
     # OAA is keyed by team_id — use the team DEFENDING (fielding) behind this pitcher

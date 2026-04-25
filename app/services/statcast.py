@@ -464,6 +464,66 @@ async def fetch_pitch_arsenal(
 
 
 # ─────────────────────────────────────────────────────────────
+# DSC — Team Sprint Speed (dsc_align proxy)
+# ─────────────────────────────────────────────────────────────
+
+async def fetch_team_sprint_speed(
+    client: httpx.AsyncClient,
+    year: int,
+) -> dict[str, dict]:
+    """
+    Fetch team average sprint speed from Baseball Savant.
+
+    Sprint speed (ft/sec) measures how fast defenders actually move.
+    This is a DISTINCT signal from OAA (OAA measures fielding outcomes;
+    sprint speed measures the raw athletic capability to cover ground).
+
+    A fast defense can play more aggressive, optimal positioning — they
+    can align correctly AND still reach balls that slower defenders could not.
+    Tom Tango research: sprint speed correlates with range independent of
+    positioning decisions made by the coaching staff.
+
+    Used for: dsc_align (DSC block, 10% weight × 5% HUSI = 0.5% total)
+
+    Returns:
+        Dict keyed by team_id (str):
+        {
+            "sprint_speed":  float | None,   # team avg ft/sec (elite ≈ 28+, slow ≈ 26-)
+            "team_name":     str
+        }
+    """
+    url = (
+        f"{SAVANT_BASE}/leaderboard/sprint_speed"
+        f"?type=team&year={year}&position=&team=&csv=true"
+    )
+
+    log.info("Team sprint speed fetch starting", year=year)
+    try:
+        resp = await client.get(url, timeout=25.0, follow_redirects=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Team sprint speed fetch failed", year=year, error=str(exc))
+        return {}
+
+    result: dict[str, dict] = {}
+    reader = csv.DictReader(io.StringIO(resp.text))
+
+    for row in reader:
+        team_id = (row.get("team_id") or row.get("teamId") or "").strip()
+        if not team_id:
+            continue
+        result[team_id] = {
+            "sprint_speed": _safe_float(
+                row.get("sprint_speed") or row.get("r_sprint_speed_top50percent")
+            ),
+            "team_name": (row.get("team_name") or row.get("name") or "").strip(),
+        }
+
+    log.info("Team sprint speed parsed", year=year, teams=len(result))
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────
 
