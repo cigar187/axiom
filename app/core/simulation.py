@@ -93,31 +93,54 @@ N_SIMULATIONS = 2_000
 SIGMA_HUSI = 9.0
 SIGMA_KUSI = 8.0
 
+# ── Cross-metric correlation: HUSI and KUSI must move in OPPOSITE directions.
+# When a pitcher has a bad day (HUSI drops → more hits), he is also failing
+# to put batters away (KUSI rises → fewer Ks). They cannot both be bad at
+# the same time — that would mean the pitcher is getting shelled AND racking
+# up strikeouts simultaneously, which is physically contradictory.
+#   Good day:  HUSI rises (fewer hits) + KUSI drops (more Ks)   = ace mode
+#   Bad day:   HUSI drops (more hits)  + KUSI rises (fewer Ks)  = shelling mode
+# ρ = -0.60 captures this real-world anti-correlation.
+HUSI_KUSI_CORRELATION = -0.60
+
 # ── Black Swan score shifts (applied to jittered scores, THEN reprojected)
 # Shifting HUSI/KUSI by these amounts before reprojection means the full
 # formula (not just a final multiplier) reflects the extreme outcome.
-GOD_MODE_HUSI_BOOST = 15.0   # elite shutdown day — electric stuff, full command
-GOD_MODE_KUSI_BOOST = 15.0   # K-rate spikes, batters overmatched
-MELTDOWN_HUSI_DROP  = 20.0   # command collapses — walks, hard contact pile up
-MELTDOWN_KUSI_DROP  = 10.0   # Ks fall as pitcher cannot put batters away
+#
+# GOD MODE (top 5%): pitcher is dominant — electric stuff, full command.
+#   HUSI rises  → far fewer hits (ace shutting down the lineup)
+#   KUSI drops  → more Ks (dominating batters, K-rate spikes)
+#
+# MELTDOWN (bottom 5%): command collapses early — walks, hard contact pile up.
+#   HUSI drops  → many more hits (pitcher getting shelled)
+#   KUSI rises  → fewer Ks (pitcher cannot put batters away when struggling)
+#
+# Critical: KUSI and HUSI move in OPPOSITE directions in both events.
+GOD_MODE_HUSI_BOOST = 15.0   # HUSI up  → fewer hits (dominant)
+GOD_MODE_KUSI_DROP  = 15.0   # KUSI down → more Ks  (dominant — subtract from KUSI)
+MELTDOWN_HUSI_DROP  = 20.0   # HUSI down → more hits (shelling)
+MELTDOWN_KUSI_RISE  = 10.0   # KUSI up  → fewer Ks  (shelling — add to KUSI)
 
 # ── Black Swan event rates
 GOD_MODE_FRAC  = 0.05   # Top 5% of runs
 MELTDOWN_FRAC  = 0.05   # Bottom 5% of runs
 
 # ── Manager leash constants
-ANALYTICS_IP_CAP             = 5.9   # ~95 pitches
+# Analytics managers pull starters earlier (~85 pitches = ~4.5 IP).
+# With the IP ceiling now at 4.8, this cap must be BELOW 4.8 to have any effect.
+# Old_School managers run pitchers to the ceiling and sometimes 1 inning beyond.
+ANALYTICS_IP_CAP             = 4.5   # analytics teams pull at ~85 pitches
 OLD_SCHOOL_EXTENSION_PROBABILITY = 0.20   # 20% of runs go 1 extra inning
 
 # ── Kill Streak threshold
 KILL_STREAK_K_THRESHOLD = 10.0
 
 # ── Managerial Yank Threshold
-# In real baseball, a pitcher giving up hits at a rate that projects to 7+ allowed
-# in fewer than 5 innings gets pulled. When yanked early, his K count is prorated
-# to the innings actually pitched — creating the natural anti-correlation between
-# high hits and high Ks that the raw formula cannot model.
-YANK_HIT_TRIGGER  = 7.0   # projected hits that indicate a shelling pace
+# With the 4.8 IP ceiling, a pitcher projecting 6+ hits (1.25 H/IP) is on a
+# shelling pace that triggers a modern analytics manager's hook. When yanked
+# early, his K count is prorated to the innings actually worked — creating the
+# natural cap between high hits and high Ks that the formula cannot model alone.
+YANK_HIT_TRIGGER  = 6.0   # projected hits that indicate a shelling pace (was 7.0)
 YANK_EXIT_IP      = 4.5   # assumed inning of early exit when shelling occurs
 
 
@@ -263,22 +286,43 @@ class SimulationEngine:
                 vaa_mult = 1.0 + float(features.vaa_contact_penalty)
 
         park_mult    = float(features.park_hits_multiplier or 1.0)
-        fixed_mult_h = vaa_mult * park_mult   # one combined factor applied every run
+        # Include TBAPI and Fragility Index multipliers — same post-formula layer as husi.py.
+        # Without this, the simulation runs 2,000 iterations at the wrong hits level for
+        # fragile pitchers even though the single-run HUSI output applies them correctly.
+        tbapi_mult   = float(getattr(features, "tbapi_hits_mult", 1.0) or 1.0)
+        fi_mult      = float(getattr(features, "fi_hits_mult",    1.0) or 1.0)
+        fixed_mult_h = vaa_mult * park_mult * tbapi_mult * fi_mult
 
-        # ── Step 3: Expected IP — manager style adjusts the IP ceiling
-        exp_ip_base = expected_ip(features.avg_ip_per_start, features.mlb_service_years)
+        # ── Step 3: Expected IP — fragility cap applied before manager style adjustment
+        exp_ip_base = expected_ip(
+            features.avg_ip_per_start,
+            features.mlb_service_years,
+            fragility_ip_cap=getattr(features, "fi_ip_cap", None),
+        )
         analytics_cap = min(exp_ip_base, ANALYTICS_IP_CAP) if manager_style == "Analytics" else exp_ip_base
 
         # ── Step 4: Baserunner Poisson lambda (for TTO3 Death Trap firing rate)
-        h_per_9    = float(features.season_hits_per_9 or 9.0)
+        # Use blended_h_per_9 — same anchored rate used by husi.py — so the
+        # simulation's WHIP estimate is consistent with the projection baseline.
+        h_per_9    = float(features.blended_h_per_9 or 9.0)
         cmd_score  = float(features.pcs_cmd or 50.0)
         bb_est     = max(1.0, (100.0 - cmd_score) / 10.0)
         whip_est   = (h_per_9 + bb_est) / 9.0
         bl2_lambda = max(0.1, whip_est * 2.0)
 
         # ── Step 5: Pre-generate ALL random draws at once (vectorized — fast)
-        husi_noise         = self.rng.normal(0.0, SIGMA_HUSI, self.n_runs)
-        kusi_noise         = self.rng.normal(0.0, SIGMA_KUSI, self.n_runs)
+        # HUSI and KUSI noise are drawn from a CORRELATED bivariate normal.
+        # Correlation ρ = -0.60: when HUSI drops (bad hits day), KUSI rises
+        # (pitcher also struggles for Ks), and vice versa on a dominant day.
+        # This prevents the physically impossible combination of high hits AND
+        # high Ks in the same simulation iteration.
+        _cov = np.array([
+            [SIGMA_HUSI ** 2,                             HUSI_KUSI_CORRELATION * SIGMA_HUSI * SIGMA_KUSI],
+            [HUSI_KUSI_CORRELATION * SIGMA_HUSI * SIGMA_KUSI, SIGMA_KUSI ** 2],
+        ])
+        _noise_2d          = self.rng.multivariate_normal([0.0, 0.0], _cov, self.n_runs)
+        husi_noise         = _noise_2d[:, 0]
+        kusi_noise         = _noise_2d[:, 1]
         resid_h_unit       = self.rng.normal(0.0, 1.0, self.n_runs)   # unit normal, scaled below
         resid_k_unit       = self.rng.normal(0.0, 1.0, self.n_runs)
         baserunner_samples = self.rng.poisson(bl2_lambda, self.n_runs)
@@ -318,13 +362,16 @@ class SimulationEngine:
                 husi_i = float(np.clip(husi_base + husi_noise[i], 0.0, 100.0))
                 kusi_i = float(np.clip(kusi_base + kusi_noise[i], 0.0, 100.0))
 
-                # B: Black Swan score overrides — shift the score, formula responds
-                if mode == 1:    # GOD MODE: elite stuff, command locked in
+                # B: Black Swan score overrides — shift the score, formula responds.
+                # HUSI and KUSI move in OPPOSITE directions in both events:
+                #   GOD MODE:  HUSI up → fewer hits;  KUSI down → more Ks
+                #   MELTDOWN:  HUSI down → more hits; KUSI up  → fewer Ks
+                if mode == 1:    # GOD MODE: electric stuff, full command, K-rate spikes
                     husi_i = float(np.clip(husi_i + GOD_MODE_HUSI_BOOST, 0.0, 100.0))
-                    kusi_i = float(np.clip(kusi_i + GOD_MODE_KUSI_BOOST, 0.0, 100.0))
-                elif mode == 2:  # MELTDOWN: command collapses early
+                    kusi_i = float(np.clip(kusi_i - GOD_MODE_KUSI_DROP,  0.0, 100.0))
+                elif mode == 2:  # MELTDOWN: command collapses, shelling pace, Ks dry up
                     husi_i = float(np.clip(husi_i - MELTDOWN_HUSI_DROP, 0.0, 100.0))
-                    kusi_i = float(np.clip(kusi_i - MELTDOWN_KUSI_DROP, 0.0, 100.0))
+                    kusi_i = float(np.clip(kusi_i + MELTDOWN_KUSI_RISE, 0.0, 100.0))
 
                 # C: Reproject using the SAME formulas as husi.py / kusi.py
                 #    (same math, different HUSI/KUSI input → formula responds correctly)
@@ -367,7 +414,7 @@ class SimulationEngine:
                 # Only fires when: (1) the inning is TTO3 territory AND (2) the
                 # random draw hits the fluidity probability for this run.
                 if (
-                    run_ip >= 5.5               # TTO3 territory (pitcher faces lineup 3rd time)
+                    run_ip >= 4.5               # late TTO2 / TTO3 territory — manager considers lineup changes
                     and bool(pinch_hit_flags[i]) # fluidity RNG triggered this run
                     and mode != 1               # not God Mode — dominant pitchers neutralize PH
                 ):

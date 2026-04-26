@@ -10,16 +10,22 @@ any manual commands or scripts.
 
 Risk Flags
 ──────────
-  ERA_DISASTER    Season ERA ≥ 6.00
-  ERA_STRUGGLING  Season ERA 5.00–5.99
-  BOOM_BUST       Recent IP variance — early-exit pattern (Walker Buehler rule)
-  EXTREME_PARK    Pitching at a park score < 40 (Coors, Chase, GABP, etc.)
-  HITTER_PARK     Pitching at a park score 40–48 (Fenway, Yankee Stadium, etc.)
-  HIGH_H9         Season H/9 ≥ 9.5
-  TFI_ACTIVE      Travel & Fatigue penalty triggered today
-  COLD_START      PFF label contains COLD or STRUGGLING
-  LOW_IP_TREND    Recent starts trending shorter than season average
-  COMBO_RISK      3 or more flags active simultaneously
+  ERA_DISASTER         Season ERA ≥ 6.00
+  ERA_STRUGGLING       Season ERA 5.00–5.99
+  BOOM_BUST            Recent IP variance — early-exit pattern (Walker Buehler rule)
+  EXTREME_PARK         Pitching at a park score < 40 (Coors, Chase, GABP, etc.)
+  HITTER_PARK          Pitching at a park score 40–48 (Fenway, Yankee Stadium, etc.)
+  HIGH_H9              Season H/9 ≥ 9.5
+  TFI_ACTIVE           Travel & Fatigue penalty triggered today
+  COLD_START           PFF label contains COLD or STRUGGLING
+  LOW_IP_TREND         Recent starts trending shorter than season average
+  COMBO_RISK           3 or more flags active simultaneously
+  FRAGILITY_ELEVATED   FI score 15–34 — short outing in most recent start
+  FRAGILITY_HIGH       FI score 35–59 — early-exit pattern, IP capped at 3.5
+  FRAGILITY_EXTREME    FI score ≥ 60  — yanked early, IP capped at 3.0 (Trevor Rogers rule)
+  TBAPI_ELEVATED       1.7–1.99 baserunners/inning in recent starts
+  TBAPI_HIGH           2.0–2.49 baserunners/inning — 4+ baserunners before 6th out
+  TBAPI_EXTREME        ≥ 2.5 baserunners/inning — chronic early-inning traffic
 """
 from app.core.features import PitcherFeatureSet
 from app.utils.logging import get_logger
@@ -35,16 +41,23 @@ HITTER_PARK_SCORE   = 48.0
 
 # ── Flag weights for the composite risk score
 FLAG_WEIGHTS = {
-    "ERA_DISASTER":   12,
-    "ERA_STRUGGLING":  7,
-    "BOOM_BUST":       8,
-    "EXTREME_PARK":    8,
-    "HIGH_H9":         5,
-    "HITTER_PARK":     3,
-    "TFI_ACTIVE":      4,
-    "COLD_START":      5,
-    "LOW_IP_TREND":    4,
-    "COMBO_RISK":      6,
+    "ERA_DISASTER":       12,
+    "ERA_STRUGGLING":      7,
+    "BOOM_BUST":           8,
+    "EXTREME_PARK":        8,
+    "HIGH_H9":             5,
+    "HITTER_PARK":         3,
+    "TFI_ACTIVE":          4,
+    "COLD_START":          5,
+    "LOW_IP_TREND":        4,
+    "COMBO_RISK":          6,
+    # Fragility modifiers
+    "FRAGILITY_ELEVATED":  5,
+    "FRAGILITY_HIGH":      9,
+    "FRAGILITY_EXTREME":  14,
+    "TBAPI_ELEVATED":      4,
+    "TBAPI_HIGH":          8,
+    "TBAPI_EXTREME":      11,
 }
 
 # ── Risk tier labels for API display
@@ -131,6 +144,49 @@ def compute_risk_profile(f: PitcherFeatureSet) -> dict:
             notes.append(
                 f"PFF score {f.pff_score:.2f} (STRUGGLING) — recent starts significantly below season baseline"
             )
+
+    # ── Fragility Index
+    fi_tier = getattr(f, "fi_tier", "NONE")
+    if fi_tier == "EXTREME":
+        flags.append("FRAGILITY_EXTREME")
+        cap = getattr(f, "fi_ip_cap", None)
+        notes.append(
+            f"Fragility Index EXTREME (score {f.fi_score:.0f}) — "
+            f"recent early exits, IP capped at {cap or 'N/A'} — "
+            + (", ".join(f.fi_notes) if f.fi_notes else "see recent starts")
+        )
+    elif fi_tier == "HIGH":
+        flags.append("FRAGILITY_HIGH")
+        notes.append(
+            f"Fragility Index HIGH (score {f.fi_score:.0f}) — "
+            + (", ".join(f.fi_notes) if f.fi_notes else "see recent starts")
+        )
+    elif fi_tier == "ELEVATED":
+        flags.append("FRAGILITY_ELEVATED")
+        notes.append(
+            f"Fragility Index ELEVATED (score {f.fi_score:.0f}) — "
+            + (", ".join(f.fi_notes) if f.fi_notes else "see recent starts")
+        )
+
+    # ── TBAPI
+    tbapi_tier = getattr(f, "tbapi_tier", "NORMAL")
+    tbapi_val  = round(getattr(f, "tbapi", 0.0), 2)
+    if tbapi_tier == "EXTREME":
+        flags.append("TBAPI_EXTREME")
+        notes.append(
+            f"TBAPI {tbapi_val} baserunners/inning (EXTREME) — "
+            f"pitcher averaging 4+ baserunners in recent starts before 6th out"
+        )
+    elif tbapi_tier == "HIGH":
+        flags.append("TBAPI_HIGH")
+        notes.append(
+            f"TBAPI {tbapi_val} baserunners/inning (HIGH) — elevated early-inning traffic pattern"
+        )
+    elif tbapi_tier == "ELEVATED":
+        flags.append("TBAPI_ELEVATED")
+        notes.append(
+            f"TBAPI {tbapi_val} baserunners/inning (ELEVATED) — above league average baserunner rate"
+        )
 
     # ── Combo Risk (3+ simultaneous flags)
     combo_risk = len(flags) >= 3

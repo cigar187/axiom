@@ -143,6 +143,43 @@ def build_features(
     # ── Raw season stats
     f.season_hits_per_9 = pitcher_data.get("season_hits_per_9")
     f.season_k_per_9 = pitcher_data.get("season_k_per_9")
+    f.season_games_started = int(pitcher_data.get("season_games_started") or 0)
+
+    # ── Bayesian shrinkage: blend small-sample season rates with league average.
+    # H/9 and K/9 from fewer than ~15 starts are statistically unreliable.
+    # A pitcher with 4 starts and H/9=3.0 will converge toward league average
+    # until the sample is large enough to be trusted on its own. This prevents
+    # projections like "1.8 hits" for rookies whose tiny sample looks elite.
+    #
+    # League averages used as the prior:
+    #   H/9  ≈ 8.5 (MLB 2024-25 starter average)
+    #   K/9  ≈ 8.3 (MLB 2024-25 starter average)
+    #
+    # Prior weight (starts):
+    #   H/9 = 8 starts  (hits rate stabilizes slowly — more regression needed)
+    #   K/9 = 6 starts  (K rate stabilizes faster — less regression needed)
+    #
+    # With gs=0 → full league average.  gs=5 → ~40% season / 60% league.
+    # gs=20 → ~71% season / 29% league.  gs=32 → ~80% season / 20% league.
+    _LEAGUE_H9     = 8.5
+    _LEAGUE_K9     = 8.3
+    _H9_PRIOR      = 8   # starts
+    _K9_PRIOR      = 6   # starts
+    _gs = f.season_games_started
+
+    if f.season_hits_per_9 is not None:
+        _raw_h9 = float(f.season_hits_per_9)
+        _blended = (_raw_h9 * _gs + _LEAGUE_H9 * _H9_PRIOR) / (_gs + _H9_PRIOR)
+        f.blended_h_per_9 = round(max(5.0, min(_blended, 14.0)), 2)
+    else:
+        f.blended_h_per_9 = _LEAGUE_H9   # no data → full league average
+
+    if f.season_k_per_9 is not None:
+        _raw_k9 = float(f.season_k_per_9)
+        _blended = (_raw_k9 * _gs + _LEAGUE_K9 * _K9_PRIOR) / (_gs + _K9_PRIOR)
+        f.blended_k_per_9 = round(max(4.0, min(_blended, 15.0)), 2)
+    else:
+        f.blended_k_per_9 = _LEAGUE_K9   # no data → full league average
 
     # ── Season ERA — stored for logging/reference only, no longer drives a penalty
     era = pitcher_data.get("season_era") or pitcher_data.get("era")
@@ -831,13 +868,11 @@ def build_features(
     # Fly-ball suppression
     f.fly_ball_suppression = 100.0 - (f.pcs_gb or 50.0)  # inverse of GB score
 
-    # Pitcher median Ks — use the same IP window as the scoring engine so the K5
-    # interaction rule (line >= pitcher_median + 1.0) is consistent.
-    if f.season_k_per_9:
-        exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years)
-        f.pitcher_median_ks = f.season_k_per_9 * (exp_ip / 9.0)
-    else:
-        f.pitcher_median_ks = None
+    # Pitcher median Ks — use blended_k_per_9 (not raw) so the K5 interaction
+    # rule (line >= pitcher_median + 1.0) is not suppressed by inflated small-sample
+    # K rates. A pitcher with K/9=15.8 from 4 starts would produce pitcher_median_ks=8.4,
+    # making K5 unreachable. The blended rate corrects this to a realistic level.
+    f.pitcher_median_ks = f.blended_k_per_9 * (_exp_ip / 9.0)
 
     # ── Bullpen Fatigue Coefficient (β_bp)
     # Own team fatigue affects KUSI (tired bullpen = less K protection for starter)
@@ -899,6 +934,21 @@ def build_features(
                  starts_used=f.pff_starts_used,
                  hits_tto1=f.pff_hits_tto1_mult,
                  ks_tto1=f.pff_ks_tto1_mult)
+
+    # ── Fragility Index + TBAPI modifiers
+    # Uses the same recent_form data as PFF — no additional API calls needed.
+    # Results are stored as post-formula multipliers; HUSI/KUSI read them from f.
+    from app.utils.fragility import compute_fragility
+    frag = compute_fragility(recent_form)
+    f.fi_score        = frag["fi_score"]
+    f.fi_tier         = frag["fi_tier"]
+    f.fi_ip_cap       = frag["fi_ip_cap"]
+    f.fi_hits_mult    = frag["fi_hits_mult"]
+    f.fi_notes        = frag["fi_notes"]
+    f.tbapi           = frag["tbapi"]
+    f.tbapi_tier      = frag["tbapi_tier"]
+    f.tbapi_hits_mult = frag["tbapi_hits_mult"]
+    f.tbapi_uses_bb   = frag["tbapi_uses_bb"]
 
     # ── ops_trend: now that PFF is computed, wire recent form into the trend score.
     # PFF is in [-0.30, +0.30]; +0.30 (ON FIRE) → ops_trend 80; -0.30 (STRUGGLING) → 20.

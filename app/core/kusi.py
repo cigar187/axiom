@@ -511,8 +511,14 @@ def compute_kusi(f: PitcherFeatureSet, silent: bool = False) -> dict:
                  grade=grade)
 
     # ── Projected strikeouts (MGS-aware)
-    exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years)
-    safe_k_per_9 = min(f.season_k_per_9 or 8.0, 15.0)
+    # fi_ip_cap reduces expected IP when the Fragility Index fires — fewer innings
+    # means fewer strikeout opportunities. Hits multipliers (TBAPI, FI) are hits-only
+    # and are not applied here.
+    exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years, fragility_ip_cap=f.fi_ip_cap)
+    # Use Bayesian-blended K/9 (computed in feature_builder.py) to prevent small-sample
+    # season rates from producing unrealistically high strikeout projections.
+    # A pitcher with 4 starts and K/9=15.8 gets blended toward league average (8.3 K/9).
+    safe_k_per_9 = min(f.blended_k_per_9, 15.0)
     base_ks = safe_k_per_9 * (exp_ip / 9.0)
     projected_ks = base_ks * (1 - 0.25 * ((kusi - 50) / 50))
 
@@ -536,6 +542,9 @@ def compute_kusi(f: PitcherFeatureSet, silent: bool = False) -> dict:
                  pitcher=f.pitcher_name,
                  exp_ip=exp_ip,
                  ip_tier=ip_tier_label(exp_ip),
+                 season_gs=f.season_games_started,
+                 raw_k_per_9=f.season_k_per_9,
+                 blended_k_per_9=f.blended_k_per_9,
                  base_ks=round(base_ks, 2),
                  mgs_ks_mult=round(mgs_ks_mult, 3),
                  mgs_label=mgs_label,

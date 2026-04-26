@@ -899,7 +899,15 @@ async def _persist_results(
                 f: PitcherFeatureSet = result["features"]
                 hr = result["husi"]
                 kr = result["kusi"]
-                exp_ip = _expected_ip(f.avg_ip_per_start, f.mlb_service_years)
+                # fragility_ip_cap MUST be included here so the ML training
+                # sample reflects the same IP that HUSI/KUSI actually used.
+                # Without it, the ML learns the wrong hits<->IP mapping for
+                # fragile pitchers and will over-project their stats.
+                exp_ip = _expected_ip(
+                    f.avg_ip_per_start,
+                    f.mlb_service_years,
+                    fragility_ip_cap=getattr(f, "fi_ip_cap", None),
+                )
                 sample = {
                     "pitcher_id": f.pitcher_id,
                     "game_id": f.game_id,

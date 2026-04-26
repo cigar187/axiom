@@ -411,7 +411,11 @@ async def _fetch_pitcher_context(
                     ip = int(parts[0]) + (int(parts[1]) / 3.0 if len(parts) > 1 else 0.0)
                 except Exception:
                     ip = 0.0
-                if ip < 2.0:
+                # Mirror the same threshold as the live mlb_stats.py adapter:
+                # 0.0 IP = injury scratch (exclude); 0.1+ IP = early exit (include).
+                # Including sub-2.0 IP starts ensures PFF retroactively sees
+                # the same early-exit signals that the live system now captures.
+                if ip < 0.1:
                     continue
                 hits = int(stat.get("hits") or 0)
                 er = int(stat.get("earnedRuns") or 0)

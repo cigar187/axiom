@@ -43,8 +43,16 @@ class PitcherFeatureSet:
     hits_under_odds: Optional[float] = None
 
     # ── Base stats (filled by MLB Stats API — used for projection formulas)
-    season_hits_per_9: Optional[float] = None    # raw hits/9 stat → drives base_hits
-    season_k_per_9: Optional[float] = None       # raw K/9 stat → drives base_ks
+    season_hits_per_9: Optional[float] = None    # raw hits/9 stat (unadjusted)
+    season_k_per_9: Optional[float] = None       # raw K/9 stat (unadjusted)
+    season_games_started: int = 0                # starts this season — used for Bayesian shrinkage
+
+    # ── Bayesian-shrunk rates (used by HUSI/KUSI for base_hits / base_ks)
+    # Small-sample season rates are pulled toward league average (H/9=8.5, K/9=8.3).
+    # A pitcher with 3 starts and H/9=3.0 gets a blended rate of ~6.8, not 3.0.
+    # As the sample grows the blend fades — at 25+ starts it barely moves the rate.
+    blended_h_per_9: float = 8.5   # Bayesian-blended H/9 — league avg default
+    blended_k_per_9: float = 8.3   # Bayesian-blended K/9 — league avg default
 
     # ── Innings pitched context (drives realistic IP window for projections)
     avg_ip_per_start: Optional[float] = None     # this season's actual avg IP/start (IP / GS)
@@ -313,3 +321,18 @@ class PitcherFeatureSet:
     #
     # None when VAA is unavailable (pre-game without live feed) or lineup not confirmed.
     swing_plane_collision_score: Optional[float] = None
+
+    # ── Fragility Index (FI) + TBAPI modifiers
+    # Computed from the pitcher's last 3 starts by fragility.py.
+    # Applied as post-formula multipliers in husi.py and kusi.py —
+    # same layer as the GB Suppressor and Park Factor Override.
+    # Safe defaults mean no adjustment fires when recent start data is unavailable.
+    fi_score:        float         = 0.0    # raw fragility score (0-100)
+    fi_tier:         str           = "NONE" # NONE / ELEVATED / HIGH / EXTREME
+    fi_ip_cap:       Optional[float] = None # effective IP ceiling (None = use standard ceiling)
+    fi_hits_mult:    float         = 1.0    # hits multiplier from Fragility Index
+    fi_notes:        list          = field(default_factory=list)  # human-readable reasons
+    tbapi:           float         = 0.0    # weighted baserunners per inning (recent starts)
+    tbapi_tier:      str           = "NORMAL" # NORMAL / ELEVATED / HIGH / EXTREME
+    tbapi_hits_mult: float         = 1.0    # hits multiplier from TBAPI
+    tbapi_uses_bb:   bool          = False  # True when walk data was available for TBAPI

@@ -146,8 +146,12 @@ def compute_pff(recent_starts: list[dict]) -> dict:
             "weighted_quality":  float   # 0-100
         }
     """
-    # Filter to starts with at least 1.0 IP (avoids injury exits corrupting the score)
-    valid = [s for s in recent_starts if s.get("ip", 0) >= 1.0]
+    # Filter to starts where at least one batter was faced (IP >= 0.1).
+    # 0.0 IP = pitcher withdrew before throwing a pitch (injury/scratch) — not a performance signal.
+    # 0.1+ IP = pitcher faced batters — even a 1.2 IP shelling is valid performance data
+    # and MUST be included. The old 1.0 IP floor was silently discarding the most
+    # informative early-exit signals (e.g., Rogers 1.2 IP, Buehler 0.2 IP disasters).
+    valid = [s for s in recent_starts if s.get("ip", 0) >= 0.1]
 
     if not valid:
         log.info("PFF: no valid recent starts — defaulting to NEUTRAL")

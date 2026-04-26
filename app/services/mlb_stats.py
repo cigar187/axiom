@@ -340,6 +340,7 @@ class MLBStatsAdapter(BaseProvider):
                             # ── IP window: compute avg IP per start this season
                             raw_ip = self._safe_float(stat.get("inningsPitched"))  # total IP as float
                             gs = self._safe_float(stat.get("gamesStarted"))
+                            pitchers[pid]["season_games_started"] = int(gs) if gs else 0
                             if raw_ip is not None and gs and gs > 0:
                                 pitchers[pid]["avg_ip_per_start"] = round(raw_ip / gs, 2)
                             else:
@@ -892,15 +893,20 @@ class MLBStatsAdapter(BaseProvider):
                 except (ValueError, IndexError):
                     ip = 0.0
 
-                # Skip abbreviated outings (injury exit, etc.)
-                if ip < 2.0:
+                # Skip true injury scratches (0.0 IP = pitcher withdrew before facing a batter).
+                # Early exits from shelling (e.g. 1.2 IP, 0.2 IP) MUST be included —
+                # they are the primary input for the Fragility Index and PFF.
+                # The old floor of 2.0 IP was silently discarding the exact starts
+                # that pff.py and fragility.py were built to detect.
+                if ip < 0.1:
                     continue
 
                 hits = int(stat.get("hits") or 0)
                 earned = int(stat.get("earnedRuns") or 0)
                 ks = int(stat.get("strikeOuts") or 0)
 
-                # Per-9 rates for this start
+                # Guard against division-by-zero on very short outings:
+                # per-9 rates require ip > 0; 0.1 IP (one batter) is safe here.
                 era_this = round((earned / ip) * 9.0, 2) if ip > 0 else 9.0
                 h9_this = round((hits / ip) * 9.0, 2) if ip > 0 else 9.0
                 k9_this = round((ks / ip) * 9.0, 2) if ip > 0 else 0.0

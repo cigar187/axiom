@@ -65,10 +65,8 @@ def label_color(label):
     return RESET
 
 # ── Fetch
-token = subprocess.check_output(["gcloud", "auth", "print-identity-token"], text=True).strip()
 result = subprocess.check_output([
-    "curl", "-s", "https://axiom-engine-jxfmi3odcq-uc.a.run.app/v1/pitchers/today",
-    "-H", f"Authorization: Bearer {token}"
+    "curl", "-s", "http://localhost:8081/v1/pitchers/today"
 ], text=True)
 
 data     = json.loads(result)
@@ -92,21 +90,33 @@ for p in pitchers:
     ml_h_proj = ml_proj_hits(hm, husi, ml_h) if ml_h else None
     ml_k_proj = ml_proj_ks(km,  kusi, ml_k)  if ml_k else None
 
+    # Fragility flag: mark pitchers with FRAGILITY or TBAPI risk in their flags.
+    # The API returns risk_flags as a pipe-delimited string e.g. "ERA_STRUGGLING|FRAGILITY_HIGH".
+    risk_flags_str = p.get("risk_flags") or ""
+    frag_marker = ""
+    if "FRAGILITY_EXTREME" in risk_flags_str or "TBAPI_EXTREME" in risk_flags_str:
+        frag_marker = "!!"   # double-bang: extreme fragility — high-confidence early exit risk
+    elif "FRAGILITY_HIGH" in risk_flags_str or "TBAPI_HIGH" in risk_flags_str:
+        frag_marker = "! "   # single-bang: elevated fragility
+    elif "FRAGILITY_ELEVATED" in risk_flags_str or "TBAPI_ELEVATED" in risk_flags_str:
+        frag_marker = "~ "   # tilde: mild fragility warning
+
     rows.append({
-        "name":     (p.get("pitcher") or "?")[:22],
-        "opp":      (p.get("opponent") or p.get("opp") or "?")[:4],
-        "husi":     husi,
-        "hgrd":     (p.get("husi_grade") or p.get("grade") or "--")[:2],
-        "kusi":     kusi,
-        "kgrd":     (p.get("kusi_grade") or "--")[:2],
-        "hf":       fv(p,"sim_p5_hits"),
-        "hm":       hm,
-        "hc":       fv(p,"sim_p95_hits"),
-        "kf":       fv(p,"sim_p5_ks"),
-        "km":       km,
-        "kc":       fv(p,"sim_p95_ks"),
+        "name":      (p.get("pitcher") or "?")[:20],
+        "opp":       (p.get("opponent") or p.get("opp") or "?")[:4],
+        "husi":      husi,
+        "hgrd":      (p.get("husi_grade") or p.get("grade") or "--")[:2],
+        "kusi":      kusi,
+        "kgrd":      (p.get("kusi_grade") or "--")[:2],
+        "hf":        fv(p,"sim_p5_hits"),
+        "hm":        hm,
+        "hc":        fv(p,"sim_p95_hits"),
+        "kf":        fv(p,"sim_p5_ks"),
+        "km":        km,
+        "kc":        fv(p,"sim_p95_ks"),
         "ml_h_proj": ml_h_proj,
         "ml_k_proj": ml_k_proj,
+        "frag":      frag_marker,
     })
 
 # ── Correlation Penalty
@@ -127,7 +137,11 @@ h_meds_s  = sorted([r["hm"] for r in rows], reverse=True)
 h_top30   = h_meds_s[int(len(h_meds_s)*0.30)]
 
 def classify(r):
-    if r["kc"] > 9.0 and r["hc"] > 9.0: return "VOLATILE"
+    # Thresholds recalibrated for the 4.8 IP ceiling.
+    # With max IP at 4.8, p95 hits tops ~8.5 and p95 Ks top ~9.5 for most starters.
+    # Old thresholds (hc>9.0 and kc>9.0) were essentially unreachable and
+    # suppressed the VOLATILE label entirely.
+    if r["kc"] > 8.5 and r["hc"] > 7.5: return "VOLATILE"
     if r["kc"] >= k_top10 and r["hc"] <= h30: return "KILLER"
     if r["hm"] >= h_top30 and r["km"] <= k30: return "SHELLED"
     return "NEUTRAL"
@@ -139,16 +153,17 @@ order = {"KILLER":0,"NEUTRAL":1,"SHELLED":2,"VOLATILE":3}
 rows.sort(key=lambda r: (order.get(r["label"],9), -r["km"]))
 
 # ── Header
-HDR = (f"{'LABEL':<10} {'PITCHER':<22} {'OPP':<4} "
+# FI column: fragility marker — !! = EXTREME, !  = HIGH, ~  = ELEVATED, blank = NONE
+W = 120
+HDR = (f"{'LABEL':<9} {'PITCHER':<20} {'OPP':<4} {'FI':<3}"
        f"{'HUSI':>5}{'H':>2} {'H-FL':>5} {'H-MD':>5} {'H-CL':>5}  "
        f"{'KUSI':>5}{'K':>2} {'K-FL':>5} {'K-MD':>5} {'K-CL':>5}  "
-       f"{'E2-H':>5} {'E2-K':>5} {'SIGNAL':<9}")
+       f"{'E2-H':>5} {'E2-K':>5}  {'SIG':<8}")
 print(f"\n{BOLD}{HDR}{RESET}")
-print("─" * 128)
+print("─" * W)
 
 prev_label = None
 for r in rows:
-    # Blank line between groups for breathing room
     if prev_label is not None and r["label"] != prev_label:
         print()
     prev_label = r["label"]
@@ -157,15 +172,26 @@ for r in rows:
     e2k = r["ml_k_proj"]
     sc, sl = signal_label(e2h, r["hm"], e2k, r["km"])
     pen    = "~" if r["pen"] else " "
-    e2h_s  = f"{e2h:5.1f}" if e2h is not None else "  -- "
-    e2k_s  = f"{e2k:5.1f}" if e2k is not None else "  -- "
+    e2h_s  = f"{e2h:5.1f}" if e2h is not None else "   --"
+    e2k_s  = f"{e2k:5.1f}" if e2k is not None else "   --"
     lbl    = f"[{r['label']}]"
+    name   = r["name"][:20]
+
+    # Color-code the fragility marker: red for extreme, yellow for elevated
+    frag   = r.get("frag", "")
+    if frag == "!!":
+        frag_s = RED + BOLD + f"{frag:<3}" + RESET
+    elif frag == "! ":
+        frag_s = YELLOW + f"{frag:<3}" + RESET
+    else:
+        frag_s = f"{frag:<3}"
 
     print(
-        f"{label_color(r['label'])}{lbl:<10}{RESET} {r['name']:<22} {r['opp']:<4} "
+        f"{label_color(r['label'])}{lbl:<9}{RESET} {name:<20} {r['opp']:<4} "
+        f"{frag_s}"
         f"{husi_color(r['husi'])}{r['husi']:5.1f}{r['hgrd']:>2} {r['hf']:5.1f} {r['hm']:5.1f} {r['hc']:5.1f}{RESET}  "
         f"{kusi_color(r['kusi'])}{r['kusi']:5.1f}{r['kgrd']:>2} {r['kf']:5.1f} {r['km']:5.1f} {r['kc']:5.1f}{pen}{RESET}  "
-        f"{sc}{e2h_s} {e2k_s} {sl}{RESET}"
+        f"{sc}{e2h_s} {e2k_s}  {sl.strip():<8}{RESET}"
     )
 
 # ── Summaries
@@ -192,4 +218,6 @@ for r in shell:
 print(f"\n{YELLOW}~ K-CEIL -15% Correlation Penalty (H-MED top 20%){RESET}")
 print(f"{CYAN}SIGNAL compares E2 projected stats vs E1 median: ALIGNED / SLIGHT / DIVERGENT / CONFLICT{RESET}")
 print(f"{GREEN}GREEN{RESET} HUSI≥65/KUSI≥52  {YELLOW}YELLOW{RESET} HUSI 52-65/KUSI 40-52  {RED}RED{RESET} below threshold")
+print(f"{RED}{BOLD}!! = FRAGILITY EXTREME (early-exit risk — IP capped 3.0)  {RESET}"
+      f"{YELLOW}!  = FRAGILITY HIGH (IP cap 3.5){RESET}  ~ = FRAGILITY ELEVATED")
 print(f"\nTotal: {len(pitchers)} pitchers")

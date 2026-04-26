@@ -54,7 +54,10 @@ log = get_logger("ml_engine")
 
 # ── Minimum samples required before the ML engine activates.
 # Below this threshold we have too little data to generalize.
-MIN_TRAINING_SAMPLES = 15
+# 30 is the statistical minimum for a gradient boosting model to produce
+# reliable cross-validation results on baseball data. At 15, the model
+# was effectively guessing and could hurt accuracy vs. the pure formula.
+MIN_TRAINING_SAMPLES = 30
 
 # ── Model hyperparameters (tuned for small-to-medium baseball datasets)
 HITS_MODEL_PARAMS = {

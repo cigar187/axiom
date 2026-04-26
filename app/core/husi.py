@@ -571,8 +571,11 @@ def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
                  grade=grade)
 
     # ── Projected hits (MGS-aware)
-    exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years)
-    safe_h_per_9 = min(f.season_hits_per_9 or 9.0, 15.0)
+    exp_ip = expected_ip(f.avg_ip_per_start, f.mlb_service_years, fragility_ip_cap=f.fi_ip_cap)
+    # Use Bayesian-blended H/9 (computed in feature_builder.py) to prevent small-sample
+    # season rates from producing unrealistically low or high hit projections.
+    # The blend pulls rookie/limited-sample pitchers toward league average (8.5 H/9).
+    safe_h_per_9 = min(f.blended_h_per_9, 15.0)
     base_hits = safe_h_per_9 * (exp_ip / 9.0)
     projected_hits = base_hits * (1 - 0.21 * ((husi - 50) / 50))
 
@@ -699,6 +702,37 @@ def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
                      hits_before=round(park_pre, 2),
                      hits_after=round(projected_hits, 2))
 
+    # ── TBAPI Modifier (post-formula — does not touch block scores)
+    # Elevated baserunner rate in recent starts → nudges hits projection upward.
+    if f.tbapi_hits_mult != 1.0:
+        tbapi_pre = projected_hits
+        projected_hits = projected_hits * f.tbapi_hits_mult
+        if not silent:
+            log.info("HUSI TBAPI modifier applied",
+                     pitcher=f.pitcher_name,
+                     tbapi=f.tbapi,
+                     tbapi_tier=f.tbapi_tier,
+                     tbapi_mult=f.tbapi_hits_mult,
+                     hits_before=round(tbapi_pre, 2),
+                     hits_after=round(projected_hits, 2))
+
+    # ── Fragility Index Modifier (post-formula — does not touch block scores)
+    # Recent early-exit pattern → nudges hits projection upward.
+    # IP cap is already applied upstream via expected_ip(); this multiplier
+    # captures the additional hits risk from a structurally fragile outing.
+    if f.fi_hits_mult != 1.0:
+        fi_pre = projected_hits
+        projected_hits = projected_hits * f.fi_hits_mult
+        if not silent:
+            log.info("HUSI Fragility Index modifier applied",
+                     pitcher=f.pitcher_name,
+                     fi_tier=f.fi_tier,
+                     fi_score=f.fi_score,
+                     fi_mult=f.fi_hits_mult,
+                     fi_ip_cap=f.fi_ip_cap,
+                     hits_before=round(fi_pre, 2),
+                     hits_after=round(projected_hits, 2))
+
     projected_hits = max(0.0, min(projected_hits, 15.0))  # hard cap
 
     if not silent:
@@ -706,9 +740,14 @@ def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
                  pitcher=f.pitcher_name,
                  exp_ip=exp_ip,
                  ip_tier=ip_tier_label(exp_ip),
+                 season_gs=f.season_games_started,
+                 raw_h_per_9=f.season_hits_per_9,
+                 blended_h_per_9=f.blended_h_per_9,
                  base_hits=round(base_hits, 2),
                  mgs_hits_mult=round(mgs_hits_mult, 3),
                  mgs_label=mgs_label,
+                 fi_tier=f.fi_tier,
+                 tbapi_tier=f.tbapi_tier,
                  projected_hits=round(projected_hits, 2))
 
     return {
@@ -723,6 +762,14 @@ def compute_husi(f: PitcherFeatureSet, silent: bool = False) -> dict:
         "mgs_label": mgs_label,
         "park_hits_multiplier": round(f.park_hits_multiplier or 1.0, 3),
         "park_extreme": f.park_extreme,
+        # Fragility modifiers (post-formula)
+        "fi_tier": f.fi_tier,
+        "fi_score": f.fi_score,
+        "fi_ip_cap": f.fi_ip_cap,
+        "fi_hits_mult": round(f.fi_hits_mult, 4),
+        "tbapi": round(f.tbapi, 4),
+        "tbapi_tier": f.tbapi_tier,
+        "tbapi_hits_mult": round(f.tbapi_hits_mult, 4),
         # Block scores for DB storage
         "owc_score": round(owc, 2),
         "pcs_score": round(pcs, 2),
