@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     RUNDOWN_API_KEY: str
-    RUNDOWN_BASE_URL: str = "https://therundown-therundown-v1.p.rapidapi.com"
+    RUNDOWN_BASE_URL: str = "https://therundown.io/api/v2"
     AXIOM_INTERNAL_TOKEN: str
     APP_ENV: str = "production"
     LOG_LEVEL: str = "INFO"

@@ -90,6 +90,11 @@ class PitcherTodayRow(BaseModel):
     husi_signal: Optional[str] = None   # ALIGNED / SLIGHT_DIFF / DIVERGENT / CONFLICT
     kusi_signal: Optional[str] = None
 
+    # Entropy Filter — agreement between Engine 1 (formula) and Engine 2 (ML)
+    hits_entropy:  Optional[float] = None  # |formula projected_hits − ml projected_hits|
+    ks_entropy:    Optional[float] = None  # |formula projected_ks   − ml projected_ks|
+    entropy_label: Optional[str]  = None  # ALIGNED / DIVERGING / HIGH_ENTROPY
+
     # B2B product tags — maps each field name to its Axiom SKU number
     # SKU #27=HUSI  #28=KUSI  #29=ML-ENGINE  #30=ENS  #31=UMP
     # #32=BFS  #33=PFF  #34=MGS  #35=PROPS  #36=PITCHER-PROFILE
@@ -258,3 +263,6 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     service: str = "axiom-engine"
     version: str = "1.0.0"
+    db: str = "unknown"
+    last_pipeline_run: Optional[str] = None
+    pitchers_scored_today: Optional[int] = None

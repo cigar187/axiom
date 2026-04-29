@@ -91,7 +91,7 @@ FEATURE_DEFAULTS: dict[str, float] = {
     "tlr_score": 50.0,
     "season_h9": 9.0,
     "season_k9": 8.0,
-    "expected_ip": 4.8,
+    "expected_ip": 4.5,
     "bullpen_fatigue_opp": 0.0,
     "bullpen_fatigue_own": 0.0,
     "ens_park": 50.0,

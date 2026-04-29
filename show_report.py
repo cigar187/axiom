@@ -66,7 +66,7 @@ def label_color(label):
 
 # ── Fetch
 result = subprocess.check_output([
-    "curl", "-s", "http://localhost:8081/v1/pitchers/today"
+    "curl", "-s", "https://axiom-api-965804388585.us-central1.run.app/v1/pitchers/today"
 ], text=True)
 
 data     = json.loads(result)
@@ -102,7 +102,7 @@ for p in pitchers:
         frag_marker = "~ "   # tilde: mild fragility warning
 
     rows.append({
-        "name":      (p.get("pitcher") or "?")[:20],
+        "name":      (p.get("pitcher") or "?")[:22],
         "opp":       (p.get("opponent") or p.get("opp") or "?")[:4],
         "husi":      husi,
         "hgrd":      (p.get("husi_grade") or p.get("grade") or "--")[:2],
@@ -154,11 +154,11 @@ rows.sort(key=lambda r: (order.get(r["label"],9), -r["km"]))
 
 # ── Header
 # FI column: fragility marker — !! = EXTREME, !  = HIGH, ~  = ELEVATED, blank = NONE
-W = 120
-HDR = (f"{'LABEL':<9} {'PITCHER':<20} {'OPP':<4} {'FI':<3}"
+W = 132
+HDR = (f"{'LABEL':<10} {'PITCHER':<22} {'OPP':<4} {'FI':<3}"
        f"{'HUSI':>5}{'H':>2} {'H-FL':>5} {'H-MD':>5} {'H-CL':>5}  "
        f"{'KUSI':>5}{'K':>2} {'K-FL':>5} {'K-MD':>5} {'K-CL':>5}  "
-       f"{'E2-H':>5} {'E2-K':>5}  {'SIG':<8}")
+       f"{'E2-H':>5} {'E2-K':>5} {'SIGNAL':<9}")
 print(f"\n{BOLD}{HDR}{RESET}")
 print("─" * W)
 
@@ -175,7 +175,7 @@ for r in rows:
     e2h_s  = f"{e2h:5.1f}" if e2h is not None else "   --"
     e2k_s  = f"{e2k:5.1f}" if e2k is not None else "   --"
     lbl    = f"[{r['label']}]"
-    name   = r["name"][:20]
+    name   = r["name"][:22]
 
     # Color-code the fragility marker: red for extreme, yellow for elevated
     frag   = r.get("frag", "")
@@ -187,11 +187,11 @@ for r in rows:
         frag_s = f"{frag:<3}"
 
     print(
-        f"{label_color(r['label'])}{lbl:<9}{RESET} {name:<20} {r['opp']:<4} "
+        f"{label_color(r['label'])}{lbl:<10}{RESET} {name:<22} {r['opp']:<4} "
         f"{frag_s}"
         f"{husi_color(r['husi'])}{r['husi']:5.1f}{r['hgrd']:>2} {r['hf']:5.1f} {r['hm']:5.1f} {r['hc']:5.1f}{RESET}  "
         f"{kusi_color(r['kusi'])}{r['kusi']:5.1f}{r['kgrd']:>2} {r['kf']:5.1f} {r['km']:5.1f} {r['kc']:5.1f}{pen}{RESET}  "
-        f"{sc}{e2h_s} {e2k_s}  {sl.strip():<8}{RESET}"
+        f"{sc}{e2h_s} {e2k_s} {sl}{RESET}"
     )
 
 # ── Summaries

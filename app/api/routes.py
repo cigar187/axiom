@@ -13,12 +13,13 @@ from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response
+# BackgroundTasks retained for run-daily and run-backfill endpoints
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from app.config import settings
 from app.models.base import get_db
-from app.models.models import Game, ProbablePitcher, ModelOutputDaily, PitcherFeaturesDaily, MLModelOutput
+from app.models.models import Game, ProbablePitcher, ModelOutputDaily, PitcherFeaturesDaily, MLModelOutput, ApiKey
 from app.schemas.schemas import (
     HealthResponse,
     PitchersTodayResponse,
@@ -45,13 +46,68 @@ router = APIRouter()
 
 
 # ─────────────────────────────────────────────────────────────
+# B2B API key authentication dependency
+# ─────────────────────────────────────────────────────────────
+
+async def require_api_key(
+    x_axiom_key: Optional[str] = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    if not x_axiom_key:
+        raise HTTPException(status_code=401, detail="Missing X-Axiom-Key header.")
+    result = await db.execute(
+        select(ApiKey).where(ApiKey.key == x_axiom_key, ApiKey.active == True)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=403, detail="Invalid or inactive API key.")
+
+
+# ─────────────────────────────────────────────────────────────
 # /health
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/health", response_model=HealthResponse, tags=["System"])
-async def health():
-    """Quick health check. Returns ok if the server is running."""
-    return HealthResponse()
+async def health(db: AsyncSession = Depends(get_db)):
+    """Health check — returns db status, last pipeline run, and today's pitcher count."""
+    from datetime import date, timezone
+    from sqlalchemy import func, text
+    from app.models.models import ModelOutputDaily
+
+    # 1) Database reachability
+    try:
+        await db.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception:
+        db_status = "unreachable"
+
+    # 2) Most recent pipeline run timestamp
+    last_run = None
+    try:
+        result = await db.execute(
+            select(func.max(ModelOutputDaily.created_at))
+        )
+        val = result.scalar_one_or_none()
+        if val:
+            last_run = val.astimezone(timezone.utc).isoformat()
+    except Exception:
+        pass
+
+    # 3) Pitchers scored today
+    scored_today = None
+    try:
+        result = await db.execute(
+            select(func.count(ModelOutputDaily.pitcher_id.distinct()))
+            .where(ModelOutputDaily.game_date == date.today())
+        )
+        scored_today = result.scalar_one_or_none()
+    except Exception:
+        pass
+
+    return HealthResponse(
+        db=db_status,
+        last_pipeline_run=last_run,
+        pitchers_scored_today=scored_today,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -62,6 +118,7 @@ async def health():
 async def pitchers_today(
     target_date: Optional[date] = Query(default=None, description="Date (YYYY-MM-DD). Defaults to today."),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ):
     """
     Full ranked table of all scored pitchers for a given date.
@@ -82,9 +139,7 @@ async def pitchers_today(
     )
     rows = (await db.execute(stmt)).all()
 
-    # Permanent fix: if today has no data (common after midnight UTC / 7 PM Eastern),
-    # fall back to the most recent date that has scored pitchers.
-    # This prevents the report from going empty just because the UTC clock rolled over.
+    # If today has no data, fall back to the most recent date that has scored pitchers.
     if not rows and not target_date:
         fallback_stmt = (
             select(ModelOutputDaily.game_date)
@@ -196,6 +251,10 @@ async def pitchers_today(
             ml_proj_ks=ml.ml_proj_ks if ml else None,
             husi_signal=ml.husi_divergence if ml else None,
             kusi_signal=ml.kusi_divergence if ml else None,
+            # Entropy Filter
+            hits_entropy=primary.hits_entropy,
+            ks_entropy=primary.ks_entropy,
+            entropy_label=primary.entropy_label,
             # B2B product tags
             product_tags=product_tags_for_response(),
             # SKU #37, #14, #38 — live-scored fields; None when pulled from DB
@@ -254,6 +313,7 @@ async def rankings_today(
     target_date: Optional[date] = Query(default=None, description="Date (YYYY-MM-DD). Defaults to today."),
     market: Optional[str] = Query(default=None, description="Filter: 'strikeouts' or 'hits_allowed'"),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ):
     """
     Ranked list of today's strongest under signals, sorted by stat_edge descending.
@@ -319,6 +379,7 @@ async def pitcher_profile(
     pitcher_id: str,
     target_date: Optional[date] = Query(default=None, description="Date (YYYY-MM-DD). Defaults to today."),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ):
     """
     Deep dive on one pitcher — all scores, projections, prop lines, and feature blocks.
@@ -446,7 +507,7 @@ async def pitcher_profile(
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/v1/products", tags=["Products"])
-async def product_catalog():
+async def product_catalog(_: None = Depends(require_api_key)):
     """
     Full Axiom B2B product catalog.
 
@@ -525,6 +586,7 @@ async def run_daily_task(
 async def merlin_board(
     target_date: Optional[date] = Query(default=None, description="Date (YYYY-MM-DD). Defaults to today."),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ):
     """
     The Merlin Board — combined hits + Ks report with simulation spreads.
@@ -639,6 +701,7 @@ async def merlin_board(
 async def export_daily_csv(
     target_date: Optional[date] = Query(default=None, description="Date (YYYY-MM-DD). Defaults to today."),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ):
     """
     Download today's full output as a spreadsheet-ready CSV file.
@@ -763,6 +826,7 @@ async def risk_today(
     date_str: Optional[str] = Query(None, alias="date", description="YYYY-MM-DD (default: today)"),
     tier: Optional[str] = Query(None, description="Filter by risk tier: HIGH, MODERATE, LOW"),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ):
     """
     Daily pitcher risk report — automatically computed each morning by the pipeline.

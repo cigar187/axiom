@@ -56,8 +56,7 @@ class RundownAdapter(BaseProvider):
 
     def _headers(self) -> dict:
         return {
-            "x-rapidapi-key": settings.RUNDOWN_API_KEY,
-            "x-rapidapi-host": "therundown-therundown-v1.p.rapidapi.com",
+            "x-therundown-key": settings.RUNDOWN_API_KEY,
         }
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
@@ -157,28 +156,34 @@ class RundownAdapter(BaseProvider):
                     continue
                 name_key = name_raw.strip().lower()
 
-                lines = participant.get("lines", participant.get("props", []))
-                if not lines:
+                affiliate_props = participant.get("affiliate_props", participant.get("props", []))
+                if not affiliate_props:
                     continue
 
-                # Pick the first available line (highest-priority sportsbook)
-                best_line = self._pick_best_line(lines)
-                if best_line is None:
-                    continue
-
-                if name_key not in props:
-                    props[name_key] = {}
-
-                props[name_key][market_name] = {
-                    "line": best_line.get("line"),
-                    "over_odds": best_line.get("over"),
-                    "under_odds": best_line.get("under"),
-                    "sportsbook": best_line.get("affiliate_name", "unknown"),
-                }
-                log.debug("Prop parsed",
-                          pitcher=name_key, market=market_name,
-                          line=best_line.get("line"),
-                          sportsbook=best_line.get("affiliate_name"))
+                for aff in affiliate_props:
+                    aff_name = (
+                        aff.get("affiliate", {}).get("affiliate_name", "")
+                        or aff.get("sportsbook", "unknown")
+                    )
+                    for line in aff.get("lines", []):
+                        val = line.get("total")
+                        if val is None:
+                            continue
+                        if name_key not in props:
+                            props[name_key] = {}
+                        props[name_key][market_name] = {
+                            "line": float(val),
+                            "over_odds": line.get("over", {}).get("decimal") or line.get("over_odds"),
+                            "under_odds": line.get("under", {}).get("decimal") or line.get("under_odds"),
+                            "sportsbook": aff_name,
+                        }
+                        log.debug("Prop parsed",
+                                  pitcher=name_key, market=market_name,
+                                  line=float(val),
+                                  sportsbook=aff_name)
+                        break  # first valid line in this affiliate
+                    if name_key in props and market_name in props[name_key]:
+                        break  # first affiliate with a valid line wins
 
     @staticmethod
     def _pick_best_line(lines: list[dict]) -> Optional[dict]:

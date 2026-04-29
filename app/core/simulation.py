@@ -129,7 +129,7 @@ MELTDOWN_FRAC  = 0.05   # Bottom 5% of runs
 # Analytics managers pull starters earlier (~85 pitches = ~4.5 IP).
 # With the IP ceiling now at 4.8, this cap must be BELOW 4.8 to have any effect.
 # Old_School managers run pitchers to the ceiling and sometimes 1 inning beyond.
-ANALYTICS_IP_CAP             = 4.5   # analytics teams pull at ~85 pitches
+ANALYTICS_IP_CAP             = 4.7   # analytics teams pull at ~85 pitches
 OLD_SCHOOL_EXTENSION_PROBABILITY = 0.20   # 20% of runs go 1 extra inning
 
 # ── Kill Streak threshold

@@ -1,0 +1,29 @@
+---
+description: Production standards for Axiom and Tiltbox — live apps, real users, no shortcuts
+alwaysApply: true
+---
+
+# Production Standards — Non-Negotiable
+
+## These are live production applications
+
+- **Tiltbox** is a live iOS app published on the Apple App Store with real users.
+- **Axiom** is the live production API that Tiltbox depends on.
+- Neither project is a hobby, test environment, or pre-launch product.
+- Every change made here affects real users immediately.
+
+## Code of conduct for every change
+
+- **Never apply a band-aid fix.** If the root cause is not fully understood, stop and investigate further before writing a single line.
+- **Never patch a symptom** while leaving the underlying problem in place. Patches break again. Root cause fixes do not.
+- **Slow down before acting.** Read all relevant files. Understand the full picture. Then fix.
+- **Never deploy untested logic** to the live API hoping it will work.
+- **Never run two fixes in sequence** without confirming the first one worked.
+- **Always explain what you are doing and why before doing it**, and wait for confirmation when the change is significant.
+
+## Specific rules for this project
+
+- Schema migrations (ALTER TABLE) are one-time operations. They must never run inside the daily pipeline.
+- The daily pipeline must be fully end-to-end tested (not just code-reviewed) before declaring it working.
+- If a pipeline run produces 0 pitchers or fails silently, that is a critical failure — not a warning.
+- The self-healing auto-trigger in routes.py must never corrupt the main database session.

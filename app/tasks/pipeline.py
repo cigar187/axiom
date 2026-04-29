@@ -27,6 +27,7 @@ from app.core.simulation import SimulationEngine
 from app.models.models import (
     Game, ProbablePitcher, SportsbookProp,
     PitcherFeaturesDaily, ModelOutputDaily, UmpireProfile, AxiomGameLineup,
+    PipelineRunLog,
 )
 from app.services.mlb_stats import MLBStatsAdapter
 from app.services.rundown import RundownAdapter
@@ -63,24 +64,6 @@ async def run_daily_pipeline(
     log.info("Pipeline starting", date=str(target_date), dry_run=dry_run)
 
     # ─────────────────────────────────────────────────────────
-    # Schema migrations — safe to run every time (IF NOT EXISTS)
-    # Any new column added to the ORM model gets added here so
-    # the database stays in sync without manual ALTER TABLE steps.
-    # ─────────────────────────────────────────────────────────
-    try:
-        from sqlalchemy import text
-        migrations = [
-            "ALTER TABLE axiom_game_lineup ADD COLUMN IF NOT EXISTS avg_attack_angle FLOAT",
-            "ALTER TABLE axiom_game_lineup ADD COLUMN IF NOT EXISTS swing_tilt FLOAT",
-        ]
-        for sql in migrations:
-            await db.execute(text(sql))
-        await db.commit()
-        log.info("Schema migrations applied", count=len(migrations))
-    except Exception as _mig_exc:
-        log.warning("Schema migration step failed (non-fatal)", error=str(_mig_exc))
-
-    # ─────────────────────────────────────────────────────────
     # Step 1: Fetch MLB data
     # ─────────────────────────────────────────────────────────
     mlb = MLBStatsAdapter()
@@ -88,6 +71,15 @@ async def run_daily_pipeline(
         mlb_data = await mlb.fetch(target_date)
     except Exception as exc:
         log.error("MLB Stats API fetch failed", error=str(exc))
+        try:
+            db.add(PipelineRunLog(
+                target_date=target_date, status="error", pitchers_scored=0,
+                games_processed=0, elapsed_seconds=round(time.monotonic() - start_time, 2),
+                error_message=f"MLB Stats API failed: {exc}", dry_run=dry_run,
+            ))
+            await db.commit()
+        except Exception:
+            pass
         return {
             "status": "error",
             "message": f"MLB Stats API failed: {exc}",
@@ -103,6 +95,15 @@ async def run_daily_pipeline(
 
     if not pitchers_data:
         log.warning("No probable pitchers found", date=str(target_date))
+        try:
+            db.add(PipelineRunLog(
+                target_date=target_date, status="no_data", pitchers_scored=0,
+                games_processed=len(games_data), elapsed_seconds=round(time.monotonic() - start_time, 2),
+                error_message="No probable pitchers found for this date.", dry_run=dry_run,
+            ))
+            await db.commit()
+        except Exception:
+            pass
         return {
             "status": "no_data",
             "message": "No probable pitchers found for this date.",
@@ -448,6 +449,7 @@ async def run_daily_pipeline(
     except Exception as vault_exc:
         log.warning("Axiom pitcher stats vault update failed (non-fatal)",
                     error=str(vault_exc))
+        await db.rollback()
 
     # ─────────────────────────────────────────────────────────
     # Step 4 + 5: Build features and score each pitcher
@@ -571,6 +573,17 @@ async def run_daily_pipeline(
 
     elapsed = round(time.monotonic() - start_time, 2)
     log.info("Pipeline complete", pitchers=len(scored_pitchers), elapsed_seconds=elapsed, dry_run=dry_run)
+
+    if not dry_run:
+        try:
+            db.add(PipelineRunLog(
+                target_date=target_date, status="success",
+                pitchers_scored=len(scored_pitchers), games_processed=len(games_data),
+                elapsed_seconds=elapsed, dry_run=False,
+            ))
+            await db.commit()
+        except Exception as log_exc:
+            log.warning("Pipeline run log write failed", error=str(log_exc))
 
     return {
         "status": "success",
@@ -975,6 +988,54 @@ async def _persist_results(
                              mae_hits=ml_result.get("mae_hits"),
                              mae_ks=ml_result.get("mae_ks"),
                              ml_outputs=len(ml_result.get("ml_outputs", [])))
+
+                    # ── Entropy Filter: measure agreement between Engine 1 and ML Engine
+                    # Runs in its own session so a failure here cannot roll back ML outputs.
+                    if ml_result.get("ml_outputs"):
+                        from sqlalchemy import text as _text
+                        async with AsyncSessionLocal() as entropy_session:
+                            try:
+                                for o in ml_result["ml_outputs"]:
+                                    pid = o["pitcher_id"]
+                                    formula = formula_outputs_by_pitcher.get(pid, {})
+                                    e1_hits = formula.get("projected_hits")
+                                    ml_hits = o.get("ml_proj_hits")
+                                    e1_ks   = formula.get("projected_ks")
+                                    ml_ks   = o.get("ml_proj_ks")
+
+                                    hits_entropy = round(abs(e1_hits - ml_hits), 3) if e1_hits is not None and ml_hits is not None else None
+                                    ks_entropy   = round(abs(e1_ks   - ml_ks),   3) if e1_ks   is not None and ml_ks   is not None else None
+
+                                    if hits_entropy is not None and ks_entropy is not None:
+                                        if hits_entropy >= 1.4 or ks_entropy >= 1.4:
+                                            entropy_label = "HIGH_ENTROPY"
+                                        elif hits_entropy >= 0.8 or ks_entropy >= 0.8:
+                                            entropy_label = "DIVERGING"
+                                        else:
+                                            entropy_label = "ALIGNED"
+                                    else:
+                                        entropy_label = None
+
+                                    await entropy_session.execute(
+                                        _text("""
+                                            UPDATE model_outputs_daily
+                                            SET hits_entropy  = :he,
+                                                ks_entropy    = :ke,
+                                                entropy_label = :el
+                                            WHERE pitcher_id = :pid
+                                              AND game_date  = :gd
+                                        """),
+                                        {"he": hits_entropy, "ke": ks_entropy,
+                                         "el": entropy_label, "pid": pid, "gd": target_date},
+                                    )
+                                await entropy_session.commit()
+                                log.info("Entropy filter written",
+                                         pitchers=len(ml_result["ml_outputs"]))
+                            except Exception as entropy_exc:
+                                log.warning("Entropy filter write failed (non-fatal)",
+                                            error=str(entropy_exc))
+                                await entropy_session.rollback()
+
                 except Exception as e:
                     log.warning("ML train_and_predict failed (non-fatal)", error=str(e))
                     await ml_session.rollback()
@@ -1048,6 +1109,7 @@ async def _persist_results(
                         )
                         await db.execute(stmt)
                         batters_written += 1
+            await db.commit()
             log.info("Axiom lineup vault updated", batters=batters_written, games=len(lineup_data))
         except Exception as lineup_exc:
             log.warning("Axiom lineup vault write failed (non-fatal)", error=str(lineup_exc))

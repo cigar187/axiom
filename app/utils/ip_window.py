@@ -22,7 +22,7 @@ from typing import Optional
 
 # Hard floor/ceiling enforced on all projections
 IP_FLOOR   = 3.5
-IP_CEILING = 4.8
+IP_CEILING = 4.7
 
 # Tier midpoints (fallback only — used when no season data is available)
 # All values must stay at or below IP_CEILING so they are not silently wrong.

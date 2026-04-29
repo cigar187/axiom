@@ -13,10 +13,9 @@ from datetime import date
 import httpx
 
 RUNDOWN_KEY = "25bf2c3f04a17935d5f26aeb03992fd579ed84b43b30ce102e680996aa8ce028"
-RUNDOWN_BASE = "https://therundown-therundown-v1.p.rapidapi.com"
+RUNDOWN_BASE = "https://therundown.io/api/v2"
 HEADERS = {
-    "x-rapidapi-key": RUNDOWN_KEY,
-    "x-rapidapi-host": "therundown-therundown-v1.p.rapidapi.com",
+    "x-therundown-key": RUNDOWN_KEY,
 }
 MLB_SPORT_ID = 3
 MARKET_STRIKEOUTS = 19

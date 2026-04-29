@@ -12,6 +12,8 @@ Tables:
   - statcast_pitcher_cache
   - axiom_pitcher_stats
   - axiom_game_lineup
+  - pipeline_run_log
+  - api_keys
 """
 import uuid
 from datetime import date, datetime
@@ -297,6 +299,11 @@ class ModelOutputDaily(Base):
     sim_confidence_hits: Mapped[Optional[str]] = mapped_column(String(16))
     sim_confidence_ks: Mapped[Optional[str]] = mapped_column(String(16))
     sim_kill_streak_prob: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── Entropy Filter — agreement between Engine 1 (formula) and Engine 2 (ML)
+    hits_entropy:  Mapped[Optional[float]] = mapped_column(Float)
+    ks_entropy:    Mapped[Optional[float]] = mapped_column(Float)
+    entropy_label: Mapped[Optional[str]]  = mapped_column(String(16))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -603,3 +610,33 @@ class AxiomGameLineup(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ─────────────────────────────────────────────────────────────
+# pipeline_run_log — records every pipeline execution
+# ─────────────────────────────────────────────────────────────
+class PipelineRunLog(Base):
+    __tablename__ = "pipeline_run_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    target_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # "success" | "error" | "no_data"
+    pitchers_scored: Mapped[int] = mapped_column(Integer, default=0)
+    games_processed: Mapped[int] = mapped_column(Integer, default=0)
+    elapsed_seconds: Mapped[Optional[float]] = mapped_column(Float)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ─────────────────────────────────────────────────────────────
+# api_keys — B2B client authentication keys
+# ─────────────────────────────────────────────────────────────
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    client_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

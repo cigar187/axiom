@@ -26,8 +26,8 @@ set -euo pipefail
 
 PROJECT="axiom-gtmvelo"
 REGION="us-central1"
-SERVICE="axiom-engine"
-JOB_NAME="axiom-daily-run"
+SERVICE="axiom-api"
+JOB_NAME="axiom-daily-pipeline"
 
 # Load environment variables (reads AXIOM_INTERNAL_TOKEN from .env)
 if [ -f .env ]; then
@@ -140,7 +140,7 @@ fi
 gcloud scheduler jobs create http "${JOB_NAME}" \
   --project="${PROJECT}" \
   --location="${REGION}" \
-  --schedule="0 10 * * *" \
+  --schedule="0 9 * * *" \
   --time-zone="America/New_York" \
   --uri="${ENDPOINT}" \
   --http-method=POST \
