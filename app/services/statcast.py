@@ -67,6 +67,8 @@ LEADERBOARD_SELECTIONS = ",".join([
     "hard_hit_percent",
     "groundballs_percent",
     "whiff_percent",
+    "xba",
+    "xwoba",
 ])
 
 # Pitchers with < 5 IP have too small a sample to be reliable
@@ -167,6 +169,10 @@ def merge_statcast_into_pitchers(
             pdata["season_hard_hit_pct"] = sc["hard_hit_pct"]
         if sc.get("gb_pct") is not None:
             pdata["season_gb_pct"] = sc["gb_pct"]
+        if sc.get("xba") is not None:
+            pdata["season_xba"] = sc["xba"]
+        if sc.get("xwoba") is not None:
+            pdata["season_xwoba"] = sc["xwoba"]
 
         matched += 1
         log.debug(
@@ -176,6 +182,8 @@ def merge_statcast_into_pitchers(
             swstr_pct=sc.get("swstr_pct"),
             hard_hit_pct=sc.get("hard_hit_pct"),
             gb_pct=sc.get("gb_pct"),
+            xba=sc.get("xba"),
+            xwoba=sc.get("xwoba"),
         )
 
     log.info("Statcast merge complete",
@@ -614,7 +622,7 @@ async def _fetch_from_savant(
     skipped = 0
 
     for row in reader:
-        pitcher_id = (row.get("pitcher") or "").strip()
+        pitcher_id = (row.get("pitcher") or row.get("player_id") or "").strip()
         if not pitcher_id:
             continue
 
@@ -627,6 +635,8 @@ async def _fetch_from_savant(
             "swstr_pct":    _safe_float(row.get("whiff_percent")),
             "hard_hit_pct": _safe_float(row.get("hard_hit_percent")),
             "gb_pct":       _safe_float(row.get("groundballs_percent")),
+            "xba":          _safe_float(row.get("xba")),
+            "xwoba":        _safe_float(row.get("xwoba")),
             "ip":           ip,
             "name":         (row.get("player_name") or "").strip(),
         }

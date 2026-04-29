@@ -239,6 +239,9 @@ def build_features(
     all_go_ao = [p.get("season_go_ao") for p in all_pitchers_data.values() if p.get("season_go_ao")]
     # Hard-hit rate population — used to differentiate pcs_bara from pcs_hha (no double-counting)
     all_hhr = [p.get("season_hard_hit_pct") for p in all_pitchers_data.values() if p.get("season_hard_hit_pct")]
+    # xBA and xwOBA allowed populations — for pcs_xbaa and pcs_xwobaa normalization
+    all_xba   = [p.get("season_xba")   for p in all_pitchers_data.values() if p.get("season_xba")   is not None]
+    all_xwoba = [p.get("season_xwoba") for p in all_pitchers_data.values() if p.get("season_xwoba") is not None]
     # WHIP proxy (H/9 + BB/9) — combined baserunner rate for ops_traffic
     all_whip_proxy = [
         p["season_hits_per_9"] + p["season_bb_per_9"]
@@ -274,6 +277,12 @@ def build_features(
     # Walk rate: lower = better → reverse direction
     if pitcher_data.get("season_bb_per_9") and len(all_bb9) >= 3:
         f.pcs_cmd = _zscore_score(pitcher_data["season_bb_per_9"], all_bb9, direction="reverse")
+    # xBA allowed: lower = better for hits under → reverse direction
+    if pitcher_data.get("season_xba") is not None and len(all_xba) >= 3:
+        f.pcs_xbaa = _zscore_score(float(pitcher_data["season_xba"]), all_xba, direction="reverse")
+    # xwOBA allowed: lower = better for hits under → reverse direction
+    if pitcher_data.get("season_xwoba") is not None and len(all_xwoba) >= 3:
+        f.pcs_xwobaa = _zscore_score(float(pitcher_data["season_xwoba"]), all_xwoba, direction="reverse")
 
     # ── OCR — Opponent Contact Rate (from the OPPOSING TEAM's hitting stats)
     # This is the most important correction: OCR measures how contact-prone the opposing lineup
