@@ -535,6 +535,77 @@ class MLBStatsAdapter(BaseProvider):
         return team_stats
 
     # ─────────────────────────────────────────────────────────
+    # OPS/KOP — Opponent IL roster count (current injured batters per team)
+    # Uses the MLB Stats API injured roster type to get the live total,
+    # not just today's placements.
+    # ─────────────────────────────────────────────────────────
+
+    async def fetch_team_injured_batters(
+        self,
+        season: str,
+    ) -> dict[str, int]:
+        """
+        Fetch the current injured list (IL) batter count for all 30 MLB teams.
+
+        Calls GET /teams/{team_id}/roster?rosterType=injured for every team in
+        parallel, counts how many position players (non-pitchers) are on each
+        team's IL right now, and returns the totals.
+
+        Returns:
+            Dict keyed by team_id (str) → current IL batter count (int).
+            Example: { "119": 3, "147": 1, "112": 0 }
+            Missing entries default to 0. Empty dict on total failure.
+        """
+        # All 30 MLB team IDs — same list used elsewhere in this codebase.
+        all_team_ids = [
+            "109", "144", "110", "111", "112", "145", "113", "114",
+            "115", "116", "117", "118", "108", "119", "146", "158",
+            "142", "121", "147", "133", "143", "134", "135", "137",
+            "136", "138", "139", "140", "141", "120",
+        ]
+
+        log.info("Fetching team IL roster counts", season=season, teams=len(all_team_ids))
+
+        il_counts: dict[str, int] = {}
+        sem = asyncio.Semaphore(10)
+
+        try:
+            async with httpx.AsyncClient() as client:
+
+                async def fetch_one_team(tid: str) -> None:
+                    async with sem:
+                        try:
+                            data = await self._get(
+                                client,
+                                f"/teams/{tid}/roster",
+                                params={"rosterType": "injured", "season": season},
+                            )
+                            batter_count = sum(
+                                1
+                                for p in data.get("roster", [])
+                                if (p.get("position", {}).get("type", "") != "Pitcher")
+                            )
+                            il_counts[tid] = batter_count
+                        except Exception as exc:
+                            log.warning("IL roster fetch failed for team (non-fatal)",
+                                        team_id=tid, error=str(exc))
+                            il_counts[tid] = 0
+
+                await asyncio.gather(*[fetch_one_team(tid) for tid in all_team_ids])
+
+        except Exception as exc:
+            log.warning("fetch_team_injured_batters failed entirely (non-fatal)", error=str(exc))
+            return {}
+
+        teams_with_il = sum(1 for v in il_counts.values() if v > 0)
+        log.info("Team IL roster counts fetched",
+                 season=season,
+                 teams_with_il_batters=teams_with_il,
+                 total_il_batters=sum(il_counts.values()))
+
+        return il_counts
+
+    # ─────────────────────────────────────────────────────────
     # Manager hook tendency
     # Calculated from the team's own starter game logs.
     # No external database needed — all from MLB Stats API.

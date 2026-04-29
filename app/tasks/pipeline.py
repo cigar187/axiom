@@ -431,6 +431,14 @@ async def run_daily_pipeline(
         log.warning("Team batting discipline fetch failed (non-fatal) — ocr_zcon/2s/foul/dec stay neutral",
                     error=str(exc))
 
+    # ── OPS/KOP — Team IL Roster (injured batter count per opponent team)
+    il_data: dict[str, int] = {}
+    try:
+        il_data = await mlb.fetch_team_injured_batters(season)
+    except Exception as exc:
+        log.warning("Team IL roster fetch failed (non-fatal) — ops_inj/kop_inj stay at default",
+                    error=str(exc))
+
     # ── PMR — Pitch Arsenal (whiff rates per pitch type for pmr_p1/p2/put)
     arsenal_data: dict[str, dict] = {}
     try:
@@ -509,6 +517,7 @@ async def run_daily_pipeline(
                 arsenal_data=arsenal_data,
                 batting_disc_data=batting_disc_data,
                 sprint_speed_data=sprint_speed_data,
+                il_data=il_data,
             )
             # Stamp the numeric team_id so the simulation can find the manager profile
             features.team_id_numeric = str(own_team_id)

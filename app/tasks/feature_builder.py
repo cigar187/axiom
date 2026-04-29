@@ -103,6 +103,7 @@ def build_features(
     arsenal_data: dict = None,
     batting_disc_data: dict = None,
     sprint_speed_data: dict = None,
+    il_data: dict = None,
 ) -> PitcherFeatureSet:
     """
     Build a PitcherFeatureSet for one pitcher.
@@ -573,12 +574,20 @@ def build_features(
     f.ops_tto = _tto_score
     f.kop_tto = _tto_score
 
-    f.ops_inj   = 60.0   # no injury report source connected — slight positive default
+    # OPS/KOP injury score: more IL batters on opponent = weakened lineup = easier for pitcher
+    _il = il_data or {}
+    _opp_il_count = _il.get(str(opponent_team_id), None) if opponent_team_id else None
+    if _opp_il_count is not None and len(_il) >= 25:
+        _all_il = [v for v in _il.values()]
+        f.ops_inj = _zscore_score(float(_opp_il_count), _all_il, direction="normal")
+    else:
+        f.ops_inj = 60.0
+
     f.ops_trend = 50.0   # overwritten below after PFF block (pff_score not yet computed)
     f.ops_fat   = 55.0   # overwritten by TFI block when travel data is available
 
     f.kop_pat   = 50.0   # patience vs this pitcher — would overlap with ocr_disc; keep neutral
-    f.kop_inj   = 60.0
+    f.kop_inj   = f.ops_inj   # same IL data feeds both — share the computed score
     f.kop_fat   = 55.0   # overwritten by TFI block when travel data is available
 
     # ── DSC — Defense Score from Baseball Savant OAA (Outs Above Average)
