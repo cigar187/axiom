@@ -380,6 +380,72 @@ async def fetch_team_oaa(
 
 
 # ─────────────────────────────────────────────────────────────
+# OCR — Team Batting Discipline (Baseball Savant custom leaderboard)
+# ─────────────────────────────────────────────────────────────
+
+async def fetch_team_batting_discipline(
+    client: httpx.AsyncClient,
+    year: int,
+) -> dict[str, dict]:
+    """
+    Fetch team-level batting discipline stats from Baseball Savant.
+
+    Pulls four metrics that directly feed the OCR block sub-features
+    which are currently hardcoded to 50 neutral:
+
+      iz_contact_percent   → ocr_zcon  (zone contact rate — high = lineup makes contact in zone)
+      oz_swing_percent     → ocr_disc  (chase rate — high = undisciplined = chases = good for K under)
+      foul_percent         → ocr_foul  (foul ball rate — high = extends at-bats = bad for K under)
+      two_strike_k_percent → ocr_2s    (K rate on two-strike counts — high = weak in two-strike = good for K under)
+
+    Free public endpoint — no API key required.
+
+    Returns:
+        Dict keyed by MLB team_id (str):
+        {
+            "zone_contact_pct":  float | None,   # iz_contact_percent
+            "chase_rate":        float | None,   # oz_swing_percent
+            "foul_rate":         float | None,   # foul_percent
+            "two_strike_k_pct":  float | None,   # two_strike_k_percent
+            "team_name":         str
+        }
+    """
+    url = (
+        f"{SAVANT_BASE}/leaderboard/custom"
+        f"?year={year}&type=batter&filter="
+        f"&sort=team_name&sortDir=asc&min=1&team=yes"
+        f"&selections=iz_contact_percent,oz_swing_percent,foul_percent,two_strike_k_percent"
+        f"&csv=true"
+    )
+
+    log.info("Team batting discipline fetch starting", year=year)
+    try:
+        resp = await client.get(url, timeout=25.0, follow_redirects=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Team batting discipline fetch failed", year=year, error=str(exc))
+        return {}
+
+    result: dict[str, dict] = {}
+    reader = csv.DictReader(io.StringIO(resp.text))
+
+    for row in reader:
+        team_id = (row.get("team_id") or row.get("teamId") or "").strip()
+        if not team_id:
+            continue
+        result[team_id] = {
+            "zone_contact_pct": _safe_float(row.get("iz_contact_percent")),
+            "chase_rate":       _safe_float(row.get("oz_swing_percent")),
+            "foul_rate":        _safe_float(row.get("foul_percent")),
+            "two_strike_k_pct": _safe_float(row.get("two_strike_k_percent")),
+            "team_name":        (row.get("team_name") or row.get("name") or "").strip(),
+        }
+
+    log.info("Team batting discipline parsed", year=year, teams=len(result))
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
 # PMR — Pitch Arsenal (Baseball Savant pitch-type stats)
 # ─────────────────────────────────────────────────────────────
 

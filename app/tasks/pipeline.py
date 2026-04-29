@@ -382,6 +382,7 @@ async def run_daily_pipeline(
         update_axiom_pitcher_stats,
         fetch_batter_swing_profiles,
         fetch_team_oaa,
+        fetch_team_batting_discipline,
         fetch_pitch_arsenal,
         fetch_team_sprint_speed,
     )
@@ -418,6 +419,16 @@ async def run_daily_pipeline(
         log.info("Team OAA fetched", teams=len(oaa_data))
     except Exception as exc:
         log.warning("Team OAA fetch failed (non-fatal) — DSC defense stays neutral",
+                    error=str(exc))
+
+    # ── OCR — Team Batting Discipline (zone contact, chase rate, foul rate, two-strike K)
+    batting_disc_data: dict[str, dict] = {}
+    try:
+        async with _httpx.AsyncClient() as disc_client:
+            batting_disc_data = await fetch_team_batting_discipline(disc_client, int(season))
+        log.info("Team batting discipline fetched", teams=len(batting_disc_data))
+    except Exception as exc:
+        log.warning("Team batting discipline fetch failed (non-fatal) — ocr_zcon/2s/foul/dec stay neutral",
                     error=str(exc))
 
     # ── PMR — Pitch Arsenal (whiff rates per pitch type for pmr_p1/p2/put)
@@ -496,6 +507,7 @@ async def run_daily_pipeline(
                 swing_profiles=swing_profiles,
                 oaa_data=oaa_data,
                 arsenal_data=arsenal_data,
+                batting_disc_data=batting_disc_data,
                 sprint_speed_data=sprint_speed_data,
             )
             # Stamp the numeric team_id so the simulation can find the manager profile

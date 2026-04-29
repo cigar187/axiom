@@ -101,6 +101,7 @@ def build_features(
     swing_profiles: dict = None,
     oaa_data: dict = None,
     arsenal_data: dict = None,
+    batting_disc_data: dict = None,
     sprint_speed_data: dict = None,
 ) -> PitcherFeatureSet:
     """
@@ -305,6 +306,7 @@ def build_features(
         # High contact rate = lineup puts ball in play = HARD to K = bad for pitcher
         f.ocr_con = _zscore_score(opp_contact_rate, all_contact_rates, direction="reverse")
         # Higher BB rate = more patient = harder to K = bad for pitcher
+        # ocr_disc may be overwritten below by Baseball Savant chase rate if batting_disc_data is available (Savant takes precedence — higher quality source).
         f.ocr_disc = _zscore_score(opp_bb_rate, all_bb_rates, direction="reverse")
 
         log.info("OCR from opponent hitting stats",
@@ -732,11 +734,55 @@ def build_features(
     f.per_fps  = 50.0   # first-pitch strike rate — no clean non-overlapping proxy available
     f.per_cmdd = 50.0   # command/location — would overlap with per_bb and pcs_cmd if wired to BB/9
 
-    # OCR sub-features not yet sourced from live data — set only if not already populated above
-    if f.ocr_zcon is None: f.ocr_zcon = 50.0
-    if f.ocr_2s   is None: f.ocr_2s   = 50.0
-    if f.ocr_foul is None: f.ocr_foul = 50.0
-    if f.ocr_dec  is None: f.ocr_dec  = 50.0
+    # ── OCR — Batting Discipline sub-features from Baseball Savant
+    # Wires zone contact, chase rate, foul rate, and two-strike K rate for the opponent team.
+    # Falls back to 50 neutral per sub-feature when data is unavailable.
+    disc = batting_disc_data or {}
+    opp_disc = disc.get(str(opponent_team_id), {}) if opponent_team_id else {}
+
+    if opp_disc and len(disc) >= 20:
+        all_zcon  = [v["zone_contact_pct"] for v in disc.values() if v.get("zone_contact_pct") is not None]
+        all_chase = [v["chase_rate"]        for v in disc.values() if v.get("chase_rate")        is not None]
+        all_foul  = [v["foul_rate"]         for v in disc.values() if v.get("foul_rate")         is not None]
+        all_2s    = [v["two_strike_k_pct"]  for v in disc.values() if v.get("two_strike_k_pct")  is not None]
+
+        # High zone contact = lineup makes contact in zone = harder to K = bad for K under → reverse
+        if opp_disc.get("zone_contact_pct") is not None and len(all_zcon) >= 20:
+            f.ocr_zcon = _zscore_score(opp_disc["zone_contact_pct"], all_zcon, direction="reverse")
+        else:
+            f.ocr_zcon = 50.0
+
+        # High chase rate = lineup chases out of zone = easy to K = good for K under → normal
+        # Overwrites MLB API walk rate proxy above — Savant chase rate is the preferred source.
+        if opp_disc.get("chase_rate") is not None and len(all_chase) >= 20:
+            f.ocr_disc = _zscore_score(opp_disc["chase_rate"], all_chase, direction="normal")
+        else:
+            f.ocr_disc = 50.0
+
+        # High foul rate = lineup extends at-bats = more pitches = bad for K under → reverse
+        if opp_disc.get("foul_rate") is not None and len(all_foul) >= 20:
+            f.ocr_foul = _zscore_score(opp_disc["foul_rate"], all_foul, direction="reverse")
+        else:
+            f.ocr_foul = 50.0
+
+        # High two-strike K rate = lineup collapses in two-strike counts = good for K under → normal
+        if opp_disc.get("two_strike_k_pct") is not None and len(all_2s) >= 20:
+            f.ocr_2s = _zscore_score(opp_disc["two_strike_k_pct"], all_2s, direction="normal")
+        else:
+            f.ocr_2s = 50.0
+
+        log.info("OCR batting discipline wired",
+                 pitcher=pitcher_data.get("pitcher_name"),
+                 opponent_team_id=opponent_team_id,
+                 ocr_zcon=round(f.ocr_zcon or 50.0, 1),
+                 ocr_disc=round(f.ocr_disc or 50.0, 1),
+                 ocr_foul=round(f.ocr_foul or 50.0, 1),
+                 ocr_2s=round(f.ocr_2s or 50.0, 1))
+    else:
+        if f.ocr_zcon is None: f.ocr_zcon = 50.0
+        if f.ocr_2s   is None: f.ocr_2s   = 50.0
+        if f.ocr_foul is None: f.ocr_foul = 50.0
+        if f.ocr_dec  is None: f.ocr_dec  = 50.0
 
     # ── TLR — Top-Lineup Resistance (from real individual batter K rates)
     # Determine which side of the lineup is the opponent
