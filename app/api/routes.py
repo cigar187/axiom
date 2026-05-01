@@ -12,14 +12,19 @@ Endpoints:
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Query, Response
+from pydantic import BaseModel
 # BackgroundTasks retained for run-daily and run-backfill endpoints
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import func, select, and_
 
 from app.config import settings
 from app.models.base import get_db
-from app.models.models import Game, ProbablePitcher, ModelOutputDaily, PitcherFeaturesDaily, MLModelOutput, ApiKey
+from app.models.models import (
+    Game, ProbablePitcher, ModelOutputDaily, PitcherFeaturesDaily, MLModelOutput, ApiKey,
+    NFLModelOutputDaily, NFLQBFeaturesDaily,
+    NHLGame, NHLModelOutputDaily, NHLGoalieFeaturesDaily, NHLSkaterFeaturesDaily,
+)
 from app.schemas.schemas import (
     HealthResponse,
     PitchersTodayResponse,
@@ -29,6 +34,7 @@ from app.schemas.schemas import (
     PitcherProfile,
     HUSIDetail,
     KUSIDetail,
+    # TODO: add HSSIDetail and KSSIDetail to schemas.py in next block
     BlockScores,
     PropLine,
     RunDailyRequest,
@@ -135,7 +141,7 @@ async def pitchers_today(
         ))
         .join(Game, ModelOutputDaily.game_id == Game.game_id)
         .where(ModelOutputDaily.game_date == query_date)
-        .order_by(ModelOutputDaily.husi.desc())
+        .order_by(ModelOutputDaily.hssi.desc())
     )
     rows = (await db.execute(stmt)).all()
 
@@ -158,7 +164,7 @@ async def pitchers_today(
                 ))
                 .join(Game, ModelOutputDaily.game_id == Game.game_id)
                 .where(ModelOutputDaily.game_date == query_date)
-                .order_by(ModelOutputDaily.husi.desc())
+                .order_by(ModelOutputDaily.hssi.desc())
             )
             rows = (await db.execute(stmt)).all()
 
@@ -225,7 +231,9 @@ async def pitchers_today(
             base_hits=hits_out.base_hits if hits_out else None,
             projected_hits=hits_out.projected_hits if hits_out else None,
             hits_edge=hits_out.stat_edge if hits_out else None,
+            hssi=hits_out.hssi if hits_out else None,
             husi=hits_out.husi if hits_out else None,
+            hssi_grade=hits_out.grade if hits_out else None,
             husi_grade=hits_out.grade if hits_out else None,
             k_line=ks_out.line if ks_out else None,
             k_under_odds=ks_out.under_odds if ks_out else None,
@@ -233,23 +241,35 @@ async def pitchers_today(
             base_ks=ks_out.base_ks if ks_out else None,
             projected_ks=ks_out.projected_ks if ks_out else None,
             k_edge=ks_out.stat_edge if ks_out else None,
+            kssi=ks_out.kssi if ks_out else None,
             kusi=ks_out.kusi if ks_out else None,
+            kssi_grade=ks_out.grade if ks_out else None,
             kusi_grade=ks_out.grade if ks_out else None,
+            interaction_boost_hssi=primary.hssi_interaction,
             interaction_boost_husi=primary.husi_interaction,
+            interaction_boost_kssi=primary.kssi_interaction,
             interaction_boost_kusi=primary.kusi_interaction,
+            volatility_penalty_hssi=primary.hssi_volatility,
             volatility_penalty_husi=primary.husi_volatility,
+            volatility_penalty_kssi=primary.kssi_volatility,
             volatility_penalty_kusi=primary.kusi_volatility,
             confidence=primary.confidence,
             notes=primary.notes,
             data_quality_flag=primary.data_quality_flag,
             # ML Engine 2
+            ml_hssi=ml.ml_hssi if ml else None,
             ml_husi=ml.ml_husi if ml else None,
+            ml_kssi=ml.ml_kssi if ml else None,
             ml_kusi=ml.ml_kusi if ml else None,
+            ml_hssi_grade=ml.ml_hssi_grade if ml else None,
             ml_husi_grade=ml.ml_husi_grade if ml else None,
+            ml_kssi_grade=ml.ml_kssi_grade if ml else None,
             ml_kusi_grade=ml.ml_kusi_grade if ml else None,
             ml_proj_hits=ml.ml_proj_hits if ml else None,
             ml_proj_ks=ml.ml_proj_ks if ml else None,
+            hssi_signal=ml.hssi_divergence if ml else None,
             husi_signal=ml.husi_divergence if ml else None,
+            kssi_signal=ml.kssi_divergence if ml else None,
             kusi_signal=ml.kusi_divergence if ml else None,
             # Entropy Filter
             hits_entropy=primary.hits_entropy,
@@ -339,7 +359,7 @@ async def rankings_today(
     rankings = []
     for rank, (output, pitcher, game) in enumerate(rows, start=1):
         index_score = (
-            output.husi if output.market_type == "hits_allowed" else output.kusi
+            output.hssi if output.market_type == "hits_allowed" else output.kssi
         )
         p_team_abbrev_rank = get_team_abbrev(pitcher.team_id) or pitcher.team_id
         p_team_name_rank   = get_team_name(pitcher.team_id) or ""
@@ -468,6 +488,11 @@ async def pitcher_profile(
             husi_volatility=primary.husi_volatility,
             grade=hits_out.grade if hits_out else None,
         ),
+        # TODO: add HSSIDetail and KSSIDetail to schemas.py in next block, then wire here:
+        # hssi=HSSIDetail(hssi=primary.hssi, hssi_base=primary.hssi_base,
+        #                  hssi_interaction=primary.hssi_interaction,
+        #                  hssi_volatility=primary.hssi_volatility,
+        #                  grade=hits_out.grade if hits_out else None),
         kusi=KUSIDetail(
             kusi=primary.kusi,
             kusi_base=primary.kusi_base,
@@ -475,6 +500,10 @@ async def pitcher_profile(
             kusi_volatility=primary.kusi_volatility,
             grade=ks_out.grade if ks_out else None,
         ),
+        # kssi=KSSIDetail(kssi=primary.kssi, kssi_base=primary.kssi_base,
+        #                  kssi_interaction=primary.kssi_interaction,
+        #                  kssi_volatility=primary.kssi_volatility,
+        #                  grade=ks_out.grade if ks_out else None),
         block_scores=blocks,
         hits_prop=PropLine(
             sportsbook=hits_out.sportsbook if hits_out else None,
@@ -612,7 +641,7 @@ async def merlin_board(
             ModelOutputDaily.game_date == td,
             ModelOutputDaily.market_type == "hits_allowed",
         )
-        .order_by(ModelOutputDaily.husi.desc().nulls_last())
+        .order_by(ModelOutputDaily.hssi.desc().nulls_last())
     )
     hits_rows = hits_result.all()
 
@@ -637,10 +666,10 @@ async def merlin_board(
         ) if h_game else ""
 
         # Color tier for hits side
-        husi_val = h_out.husi or 0.0
-        if husi_val >= 57:
+        hssi_val = h_out.hssi or 0.0
+        if hssi_val >= 57:
             hits_color = "GREEN"
-        elif husi_val >= 45:
+        elif hssi_val >= 45:
             hits_color = "YELLOW"
         else:
             hits_color = "RED"
@@ -660,6 +689,8 @@ async def merlin_board(
             "opponent":      opponent_mb,
             "game":          h_out.game_id,
             # ── Hits
+            "hssi":          h_out.hssi,
+            "hssi_grade":    h_out.grade,
             "husi":          h_out.husi,
             "husi_grade":    h_out.grade,
             "hits_line":     h_out.line,
@@ -670,6 +701,8 @@ async def merlin_board(
             "h_under_pct":   h_out.sim_under_pct_hits,
             "hits_color":    hits_color,
             # ── Ks
+            "kssi":          k.kssi if k else None,
+            "kssi_grade":    k.grade if k else None,
             "kusi":          k.kusi if k else None,
             "kusi_grade":    k.grade if k else None,
             "k_line":        k.line if k else None,
@@ -751,7 +784,9 @@ async def export_daily_csv(
             "base_ks": output.base_ks,
             "projected_hits": round(output.projected_hits, 2) if output.projected_hits else "",
             "projected_ks": round(output.projected_ks, 2) if output.projected_ks else "",
+            "HSSI": round(output.hssi, 2) if output.hssi else "",
             "HUSI": round(output.husi, 2) if output.husi else "",
+            "KSSI": round(output.kssi, 2) if output.kssi else "",
             "KUSI": round(output.kusi, 2) if output.kusi else "",
             "interaction_boost": round((output.husi_interaction or 0) + (output.kusi_interaction or 0), 2),
             "volatility_penalty": round((output.husi_volatility or 0) + (output.kusi_volatility or 0), 2),
@@ -779,40 +814,49 @@ async def export_daily_csv(
 # Protected by the same internal token as run-daily.
 # ─────────────────────────────────────────────────────────────
 
+class BackfillRequest(BaseModel):
+    season: str = "2026"
+
+
 @router.post("/v1/tasks/run-backfill", tags=["Tasks"])
 async def run_backfill_endpoint(
     background_tasks: BackgroundTasks,
+    body: BackfillRequest = BackfillRequest(),
     axiom_internal_token: Optional[str] = Header(default=None, alias="AXIOM-INTERNAL-TOKEN"),
 ):
     """
-    Retroactively load the full 2026 season into ml_training_samples.
-    Returns immediately — actual work runs in the background (takes 5-15 min).
+    Retroactively load a full MLB season into ml_training_samples.
+    Accepts optional JSON body: {"season": "2025"} — defaults to "2026".
+    Returns immediately — actual work runs in the background (takes 20-35 min for a full season).
     Safe to call multiple times — uses ON CONFLICT DO NOTHING so no duplicates.
     Check Cloud Run logs to monitor progress.
     """
     if axiom_internal_token != settings.AXIOM_INTERNAL_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    season = body.season
+
     async def _run_backfill_task() -> None:
         from app.ml.backfill import run_backfill
         from app.models.base import AsyncSessionLocal
         try:
             async with AsyncSessionLocal() as session:
-                result = await run_backfill(session, season="2026")
+                result = await run_backfill(session, season=season)
                 log.info("Backfill background task complete",
+                         season=season,
                          loaded=result["loaded"],
                          skipped=result["skipped"],
                          errors=result["errors"])
         except Exception as exc:
-            log.error("Backfill background task failed", error=str(exc))
+            log.error("Backfill background task failed", season=season, error=str(exc))
 
     background_tasks.add_task(_run_backfill_task)
 
     return {
         "status": "started",
+        "season": season,
         "message": (
-            "Backfill is running in the background. "
-            "It will load all 2026 season games into ml_training_samples. "
+            f"Backfill is running in the background for the {season} season. "
             "Check Cloud Run logs for progress — look for 'ML backfill complete'."
         ),
     }
@@ -909,6 +953,7 @@ async def risk_today(
             "season_era_tier":    output.season_era_tier or "NORMAL",
             "park_extreme":       output.park_extreme or False,
             "park_hits_multiplier": output.park_hits_multiplier or 1.0,
+            "hssi":               output.hssi,
             "husi":               output.husi,
             "projected_hits":     output.projected_hits,
             "grade":              output.grade,
@@ -931,4 +976,790 @@ async def risk_today(
             "combo_risk_count": combos,
         },
         "pitchers": pitchers,
+    }
+
+
+# ── NFL QB Endpoints ──────────────────────────────────────────
+
+
+class NFLRunWeeklyRequest(BaseModel):
+    dry_run: bool = False
+
+
+# ─────────────────────────────────────────────────────────────
+# Shared NFL helpers
+# ─────────────────────────────────────────────────────────────
+
+def _nfl_season_year_routes(today: date) -> int:
+    return today.year if today.month >= 8 else today.year - 1
+
+
+async def _get_current_nfl_week(db: AsyncSession, season_year: int) -> int:
+    """Return the most recent week that has scored data in nfl_model_outputs_daily."""
+    result = await db.execute(
+        select(func.max(NFLModelOutputDaily.week))
+        .where(NFLModelOutputDaily.season_year == season_year)
+    )
+    return result.scalar_one_or_none() or 1
+
+
+def _merge_nfl_rows(rows) -> list[dict]:
+    """
+    Group nfl_model_outputs_daily rows (one per market per QB) into one
+    combined dict per QB. Returns list ordered by insertion order.
+    """
+    qb_map: dict[str, dict] = {}
+    for output in rows:
+        key = f"{output.game_id}::{output.qb_name}"
+        if key not in qb_map:
+            qb_map[key] = {
+                "qb_name":   output.qb_name,
+                "team":      output.team,
+                "opponent":  output.opponent,
+                "week":      output.week,
+                "game_id":   output.game_id,
+                "yards":     None,
+                "tds":       None,
+            }
+        if output.market == "passing_yards":
+            qb_map[key]["yards"] = output
+        elif output.market == "touchdowns":
+            qb_map[key]["tds"] = output
+    return list(qb_map.values())
+
+
+def _build_qb_card(entry: dict) -> dict:
+    """Build the standard QB scoring card dict from a merged entry."""
+    yards_row = entry.get("yards")
+    td_row    = entry.get("tds")
+    return {
+        "qb_name":               entry["qb_name"],
+        "team":                  entry["team"],
+        "opponent":              entry["opponent"],
+        "week":                  entry["week"],
+        "qpyi_score":            yards_row.qpyi_score if yards_row else None,
+        "qpyi_grade":            yards_row.grade      if yards_row else None,
+        "projected_yards":       yards_row.projected_value if yards_row else None,
+        "prop_passing_yards_line": yards_row.prop_line if yards_row else None,
+        "passing_yards_edge":    yards_row.edge        if yards_row else None,
+        "qtdi_score":            td_row.qtdi_score     if td_row    else None,
+        "qtdi_grade":            td_row.grade          if td_row    else None,
+        "projected_tds":         td_row.projected_value if td_row   else None,
+        "prop_td_line":          td_row.prop_line       if td_row   else None,
+        "td_edge":               td_row.edge            if td_row   else None,
+        "signal_tag":            (td_row or yards_row).signal_tag
+                                 if (td_row or yards_row) else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nfl/qbs/today
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nfl/qbs/today", tags=["NFL"])
+async def nfl_qbs_today(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Full list of all scored QBs for the current NFL week.
+    Returns QPYI, QTDI, grades, prop lines, projections, and edge for every QB.
+    """
+    today       = date.today()
+    season_year = _nfl_season_year_routes(today)
+    week        = await _get_current_nfl_week(db, season_year)
+
+    stmt = (
+        select(NFLModelOutputDaily)
+        .where(
+            and_(
+                NFLModelOutputDaily.season_year == season_year,
+                NFLModelOutputDaily.week        == week,
+            )
+        )
+        .order_by(NFLModelOutputDaily.qb_name)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    if not rows:
+        return {
+            "week":    week,
+            "season":  season_year,
+            "count":   0,
+            "qbs":     [],
+            "message": (
+                "No NFL QB data found for this week. "
+                "The pipeline has not run yet or no games are scheduled."
+            ),
+        }
+
+    merged = _merge_nfl_rows(rows)
+    cards  = [_build_qb_card(e) for e in merged]
+
+    return {
+        "week":        week,
+        "season":      season_year,
+        "generated_at": datetime.utcnow().isoformat(),
+        "count":        len(cards),
+        "qbs":          cards,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nfl/rankings/today
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nfl/rankings/today", tags=["NFL"])
+async def nfl_rankings_today(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Ranked list of all QBs for the current NFL week.
+    Sorted by composite edge: (passing_yards_edge * 0.5) + (td_edge * 0.5) descending.
+    Highest composite edge = strongest combined yards + TD signal at the top.
+    """
+    today       = date.today()
+    season_year = _nfl_season_year_routes(today)
+    week        = await _get_current_nfl_week(db, season_year)
+
+    stmt = (
+        select(NFLModelOutputDaily)
+        .where(
+            and_(
+                NFLModelOutputDaily.season_year == season_year,
+                NFLModelOutputDaily.week        == week,
+            )
+        )
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    if not rows:
+        return {
+            "week":     week,
+            "season":   season_year,
+            "count":    0,
+            "rankings": [],
+            "message":  "No NFL QB data found for this week. Pipeline has not run yet.",
+        }
+
+    merged = _merge_nfl_rows(rows)
+    cards  = [_build_qb_card(e) for e in merged]
+
+    def _composite_edge(card: dict) -> float:
+        ye = card.get("passing_yards_edge") or 0.0
+        te = card.get("td_edge")            or 0.0
+        return (ye * 0.5) + (te * 0.5)
+
+    cards.sort(key=_composite_edge, reverse=True)
+
+    ranked = []
+    for rank, card in enumerate(cards, start=1):
+        ranked.append({
+            "rank":             rank,
+            "composite_edge":   round(_composite_edge(card), 2),
+            **card,
+        })
+
+    return {
+        "week":         week,
+        "season":       season_year,
+        "generated_at": datetime.utcnow().isoformat(),
+        "count":        len(ranked),
+        "rankings":     ranked,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nfl/qbs/{qb_name}/profile
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nfl/qbs/{qb_name}/profile", tags=["NFL"])
+async def nfl_qb_profile(
+    qb_name: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Deep-dive on one NFL QB for the current week.
+    Returns the full scoring card plus all 12 individual block scores.
+    QB name is case-insensitive and URL-decoded automatically by FastAPI.
+    """
+    today       = date.today()
+    season_year = _nfl_season_year_routes(today)
+    week        = await _get_current_nfl_week(db, season_year)
+
+    # Case-insensitive name match using ILIKE
+    from sqlalchemy import cast, String
+    output_stmt = (
+        select(NFLModelOutputDaily)
+        .where(
+            and_(
+                NFLModelOutputDaily.season_year == season_year,
+                NFLModelOutputDaily.week        == week,
+                NFLModelOutputDaily.qb_name.ilike(qb_name),
+            )
+        )
+    )
+    output_rows = (await db.execute(output_stmt)).scalars().all()
+
+    if not output_rows:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No NFL data found for QB '{qb_name}' in week {week} "
+                f"of the {season_year} season. "
+                "Check the spelling or confirm the pipeline has run for this week."
+            ),
+        )
+
+    # Merge the two market rows into one card
+    merged = _merge_nfl_rows(output_rows)
+    card   = _build_qb_card(merged[0])
+
+    # Pull the feature block scores
+    feat_stmt = (
+        select(NFLQBFeaturesDaily)
+        .where(
+            and_(
+                NFLQBFeaturesDaily.season_year == season_year,
+                NFLQBFeaturesDaily.week        == week,
+                NFLQBFeaturesDaily.qb_name.ilike(qb_name),
+            )
+        )
+        .limit(1)
+    )
+    feat_row = (await db.execute(feat_stmt)).scalar_one_or_none()
+
+    block_scores = {
+        "osw_score":    feat_row.osw_score    if feat_row else None,
+        "qsr_score":    feat_row.qsr_score    if feat_row else None,
+        "gsp_score":    feat_row.gsp_score    if feat_row else None,
+        "scb_score":    feat_row.scb_score    if feat_row else None,
+        "pdr_score":    feat_row.pdr_score    if feat_row else None,
+        "ens_score":    feat_row.ens_score    if feat_row else None,
+        "dsr_score":    feat_row.dsr_score    if feat_row else None,
+        "rct_score":    feat_row.rct_score    if feat_row else None,
+        "ord_score":    feat_row.ord_score    if feat_row else None,
+        "qtr_score":    feat_row.qtr_score    if feat_row else None,
+        "gsp_td_score": feat_row.gsp_td_score if feat_row else None,
+        "scb_td_score": feat_row.scb_td_score if feat_row else None,
+    }
+
+    return {
+        "week":         week,
+        "season":       season_year,
+        "generated_at": datetime.utcnow().isoformat(),
+        **card,
+        "block_scores": block_scores,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nfl/exports/weekly.csv
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nfl/exports/weekly.csv", tags=["NFL"])
+async def nfl_export_weekly_csv(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Download the current NFL week's full QB output as a spreadsheet-ready CSV.
+    Filename format: axiom_nfl_week_{week}_{YYYY-MM-DD}.csv
+    """
+    today       = date.today()
+    season_year = _nfl_season_year_routes(today)
+    week        = await _get_current_nfl_week(db, season_year)
+
+    stmt = (
+        select(NFLModelOutputDaily)
+        .where(
+            and_(
+                NFLModelOutputDaily.season_year == season_year,
+                NFLModelOutputDaily.week        == week,
+            )
+        )
+        .order_by(NFLModelOutputDaily.qb_name)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    filename = f"axiom_nfl_week_{week}_{today}.csv"
+
+    if not rows:
+        return Response(
+            content="qb_name,team,week\nNo data for this week.\n",
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    merged     = _merge_nfl_rows(rows)
+    export_rows = []
+    for entry in merged:
+        card = _build_qb_card(entry)
+        export_rows.append({
+            "week":                    card["week"],
+            "season":                  season_year,
+            "qb_name":                 card["qb_name"],
+            "team":                    card["team"],
+            "opponent":                card["opponent"],
+            "qpyi_score":              card["qpyi_score"]              or "",
+            "qpyi_grade":              card["qpyi_grade"]              or "",
+            "projected_yards":         round(card["projected_yards"], 1)
+                                       if card["projected_yards"] is not None else "",
+            "prop_passing_yards_line": card["prop_passing_yards_line"] or "",
+            "passing_yards_edge":      round(card["passing_yards_edge"], 2)
+                                       if card["passing_yards_edge"] is not None else "",
+            "qtdi_score":              card["qtdi_score"]              or "",
+            "qtdi_grade":              card["qtdi_grade"]              or "",
+            "projected_tds":           round(card["projected_tds"], 2)
+                                       if card["projected_tds"] is not None else "",
+            "prop_td_line":            card["prop_td_line"]            or "",
+            "td_edge":                 round(card["td_edge"], 2)
+                                       if card["td_edge"] is not None else "",
+            "signal_tag":              card["signal_tag"]              or "",
+        })
+
+    csv_content = rows_to_csv(export_rows)
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# POST /v1/tasks/nfl/run-weekly  (protected by internal token)
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/v1/tasks/nfl/run-weekly", tags=["Tasks"])
+async def run_nfl_weekly_task(
+    background_tasks: BackgroundTasks,
+    body: NFLRunWeeklyRequest = Body(default=NFLRunWeeklyRequest()),
+    axiom_internal_token: Optional[str] = Header(
+        default=None, alias="AXIOM-INTERNAL-TOKEN"
+    ),
+):
+    """
+    Trigger the NFL weekly QB scoring pipeline.
+    Returns immediately — pipeline runs in the background.
+    Results are saved to the database; read them via GET /v1/nfl/qbs/today.
+    Protected: requires AXIOM-INTERNAL-TOKEN header.
+    """
+    if axiom_internal_token != settings.AXIOM_INTERNAL_TOKEN:
+        raise HTTPException(
+            status_code=403, detail="Invalid or missing AXIOM-INTERNAL-TOKEN."
+        )
+
+    dry_run = body.dry_run
+    log.info("NFL pipeline triggered",
+             timestamp=datetime.utcnow().isoformat(), dry_run=dry_run)
+
+    async def _run_nfl_pipeline_task() -> None:
+        from app.tasks.nfl_pipeline import run_nfl_pipeline
+        try:
+            result = await run_nfl_pipeline(dry_run=dry_run)
+            log.info("NFL background pipeline complete",
+                     status=result.get("status"),
+                     qbs_scored=result.get("qbs_scored"),
+                     elapsed=result.get("elapsed_seconds"))
+        except Exception as exc:
+            log.error("NFL background pipeline failed", error=str(exc))
+
+    background_tasks.add_task(_run_nfl_pipeline_task)
+
+    return {
+        "status":   "started",
+        "dry_run":  dry_run,
+        "message": (
+            "NFL pipeline is running in the background. "
+            "Results will be available at GET /v1/nfl/qbs/today once complete."
+        ),
+    }
+
+
+# ── NHL Endpoints ──────────────────────────────────────────
+
+
+class NHLRunDailyRequest(BaseModel):
+    dry_run: bool = False
+    game_date: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# NHL shared helpers
+# ─────────────────────────────────────────────────────────────
+
+def _build_nhl_card(row: NHLModelOutputDaily) -> dict:
+    """Build the standard NHL scoring card dict from one output row."""
+    return {
+        "player_name":              row.player_name,
+        "team":                     row.team,
+        "opponent":                 row.opponent,
+        "position":                 row.position,
+        "market":                   row.market,
+        "gsai_score":               row.gsai_score,
+        "ppsi_score":               row.ppsi_score,
+        "grade":                    row.grade,
+        "projected_value":          row.projected_value,
+        "prop_line":                row.prop_line,
+        "edge":                     row.edge,
+        "signal_tag":               row.signal_tag,
+        "ml_projection":            row.ml_projection,
+        "ml_signal":                row.ml_signal,
+        "playoff_discount_applied": row.playoff_discount_applied,
+    }
+
+
+async def _nhl_rows_for_date(db: AsyncSession, query_date: date) -> list:
+    """Return all NHLModelOutputDaily rows for a given date, joined through NHLGame."""
+    stmt = (
+        select(NHLModelOutputDaily)
+        .join(NHLGame, NHLModelOutputDaily.game_id == NHLGame.game_id)
+        .where(NHLGame.game_date == query_date)
+        .order_by(NHLModelOutputDaily.player_name, NHLModelOutputDaily.market)
+    )
+    return (await db.execute(stmt)).scalars().all()
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nhl/players/today
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nhl/players/today", tags=["NHL"])
+async def nhl_players_today(
+    target_date: Optional[date] = Query(
+        default=None, description="Date (YYYY-MM-DD). Defaults to today."
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Full list of all scored NHL players for a given date.
+
+    Returns one scoring card per player per market.
+    Goalies have one card (market: shots_faced).
+    Skaters have four cards (markets: points, goals, assists, shots_on_goal).
+    Response is separated into { "goalies": [...], "skaters": [...] }.
+    """
+    query_date = target_date or date.today()
+    rows = await _nhl_rows_for_date(db, query_date)
+
+    if not rows:
+        return {
+            "date":     str(query_date),
+            "goalies":  [],
+            "skaters":  [],
+            "message": (
+                "No NHL player data found for this date. "
+                "The pipeline has not run yet or no games are scheduled."
+            ),
+        }
+
+    goalies = [_build_nhl_card(r) for r in rows if r.market == "shots_faced"]
+    skaters = [_build_nhl_card(r) for r in rows if r.market != "shots_faced"]
+
+    return {
+        "date":           str(query_date),
+        "generated_at":   datetime.utcnow().isoformat(),
+        "goalie_count":   len({c["player_name"] for c in goalies}),
+        "skater_count":   len({c["player_name"] for c in skaters}),
+        "goalies":        goalies,
+        "skaters":        skaters,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nhl/rankings/today
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nhl/rankings/today", tags=["NHL"])
+async def nhl_rankings_today(
+    target_date: Optional[date] = Query(
+        default=None, description="Date (YYYY-MM-DD). Defaults to today."
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Ranked NHL player list for a given date.
+
+    Goalies are ranked by projected shots edge (shots_faced market), best edge first.
+    Skaters are ranked by projected points edge (points market), best edge first.
+    Each entry includes a rank field starting at 1 within each group.
+    """
+    query_date = target_date or date.today()
+    rows = await _nhl_rows_for_date(db, query_date)
+
+    if not rows:
+        return {
+            "date":     str(query_date),
+            "goalies":  [],
+            "skaters":  [],
+            "message":  "No NHL player data found for this date. Pipeline has not run yet.",
+        }
+
+    # Rank goalies by shots_faced edge, descending
+    goalie_rows = [r for r in rows if r.market == "shots_faced"]
+    goalie_rows.sort(key=lambda r: (r.edge or 0.0), reverse=True)
+    goalies_ranked = []
+    for rank, r in enumerate(goalie_rows, start=1):
+        card = _build_nhl_card(r)
+        card["rank"] = rank
+        goalies_ranked.append(card)
+
+    # Rank skaters by points edge, descending
+    skater_rows = [r for r in rows if r.market == "points"]
+    skater_rows.sort(key=lambda r: (r.edge or 0.0), reverse=True)
+    skaters_ranked = []
+    for rank, r in enumerate(skater_rows, start=1):
+        card = _build_nhl_card(r)
+        card["rank"] = rank
+        skaters_ranked.append(card)
+
+    return {
+        "date":           str(query_date),
+        "generated_at":   datetime.utcnow().isoformat(),
+        "goalie_count":   len(goalies_ranked),
+        "skater_count":   len(skaters_ranked),
+        "goalies":        goalies_ranked,
+        "skaters":        skaters_ranked,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nhl/players/{player_name}/profile
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nhl/players/{player_name}/profile", tags=["NHL"])
+async def nhl_player_profile(
+    player_name: str,
+    target_date: Optional[date] = Query(
+        default=None, description="Date (YYYY-MM-DD). Defaults to today."
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Deep-dive on one NHL player for a given date.
+
+    Returns the full scoring card for all markets plus all 6 individual block scores
+    from the GSAI or PPSI engine depending on position.
+    Player name is case-insensitive. Returns 404 if the player has no data today.
+    """
+    query_date = target_date or date.today()
+
+    # Load all market rows for this player using case-insensitive name match
+    stmt = (
+        select(NHLModelOutputDaily)
+        .join(NHLGame, NHLModelOutputDaily.game_id == NHLGame.game_id)
+        .where(
+            and_(
+                NHLGame.game_date == query_date,
+                NHLModelOutputDaily.player_name.ilike(player_name),
+            )
+        )
+        .order_by(NHLModelOutputDaily.market)
+    )
+    output_rows = (await db.execute(stmt)).scalars().all()
+
+    if not output_rows:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No NHL data found for '{player_name}' on {query_date}. "
+                "Check the spelling or confirm the pipeline has run for this date."
+            ),
+        )
+
+    first = output_rows[0]
+    is_goalie = first.market == "shots_faced"
+    game_id   = first.game_id
+    player_id = first.player_id
+
+    cards = [_build_nhl_card(r) for r in output_rows]
+
+    # Pull engine block scores from the appropriate features table
+    block_scores: dict = {}
+    if is_goalie:
+        feat_stmt = (
+            select(NHLGoalieFeaturesDaily)
+            .where(
+                and_(
+                    NHLGoalieFeaturesDaily.game_id   == game_id,
+                    NHLGoalieFeaturesDaily.player_id == player_id,
+                )
+            )
+            .limit(1)
+        )
+        feat = (await db.execute(feat_stmt)).scalar_one_or_none()
+        if feat:
+            block_scores = {
+                "gsai_score": feat.gsai_score,
+                "gss_score":  feat.gss_score,   # Goalie Save Suppression    29%
+                "osq_score":  feat.osq_score,   # Opponent Shooting Quality  24%
+                "top_score":  feat.top_score,   # Tactical / Operational     18%
+                "gen_score":  feat.gen_score,   # Game Environment           16%
+                "rfs_score":  feat.rfs_score,   # Referee Flow Score          8%
+                "tsc_score":  feat.tsc_score,   # Team Structure & Coverage   5%
+                "projected_shots": feat.projected_shots,
+            }
+    else:
+        feat_stmt = (
+            select(NHLSkaterFeaturesDaily)
+            .where(
+                and_(
+                    NHLSkaterFeaturesDaily.game_id   == game_id,
+                    NHLSkaterFeaturesDaily.player_id == player_id,
+                )
+            )
+            .limit(1)
+        )
+        feat = (await db.execute(feat_stmt)).scalar_one_or_none()
+        if feat:
+            block_scores = {
+                "ppsi_score":        feat.ppsi_score,
+                "osr_score":         feat.osr_score,   # Opponent Scoring Resistance 28%
+                "pmr_score":         feat.pmr_score,   # Player Matchup Rating       22%
+                "per_score":         feat.per_score,   # Player Efficiency Rating    18%
+                "pop_score":         feat.pop_score,   # Points Operational          14%
+                "rps_score":         feat.rps_score,   # Referee PP Score            10%
+                "tld_score":         feat.tld_score,   # Top-Line Deployment          8%
+                "projected_pts":     feat.projected_pts,
+                "projected_sog":     feat.projected_sog,
+                "projected_goals":   feat.projected_goals,
+                "projected_assists": feat.projected_assists,
+            }
+
+    return {
+        "date":         str(query_date),
+        "generated_at": datetime.utcnow().isoformat(),
+        "player_name":  first.player_name,
+        "team":         first.team,
+        "opponent":     first.opponent,
+        "position":     first.position,
+        "player_type":  "goalie" if is_goalie else "skater",
+        "markets":      cards,
+        "block_scores": block_scores,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# GET /v1/nhl/exports/daily.csv
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/nhl/exports/daily.csv", tags=["NHL"])
+async def nhl_export_daily_csv(
+    target_date: Optional[date] = Query(
+        default=None, description="Date (YYYY-MM-DD). Defaults to today."
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Download today's full NHL output as a spreadsheet-ready CSV file.
+    Includes both goalies and skaters in one file.
+    A position_group column ("goalie" or "skater") distinguishes them.
+    Filename format: axiom_nhl_{date}.csv
+    """
+    query_date = target_date or date.today()
+    filename   = f"axiom_nhl_{query_date}.csv"
+
+    rows = await _nhl_rows_for_date(db, query_date)
+
+    if not rows:
+        return Response(
+            content="date,player_name,position_group\nNo data for this date.\n",
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    export_rows = []
+    for r in rows:
+        export_rows.append({
+            "date":                     str(query_date),
+            "position_group":           "goalie" if r.market == "shots_faced" else "skater",
+            "player_name":              r.player_name,
+            "team":                     r.team,
+            "opponent":                 r.opponent,
+            "position":                 r.position,
+            "market":                   r.market,
+            "gsai_score":               round(r.gsai_score, 2) if r.gsai_score is not None else "",
+            "ppsi_score":               round(r.ppsi_score, 2) if r.ppsi_score is not None else "",
+            "grade":                    r.grade or "",
+            "projected_value":          round(r.projected_value, 2),
+            "prop_line":                r.prop_line if r.prop_line is not None else "",
+            "edge":                     round(r.edge, 2) if r.edge is not None else "",
+            "signal_tag":               r.signal_tag or "",
+            "ml_projection":            round(r.ml_projection, 2) if r.ml_projection is not None else "",
+            "ml_signal":                r.ml_signal or "",
+            "playoff_discount_applied": r.playoff_discount_applied,
+        })
+
+    csv_content = rows_to_csv(export_rows)
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# POST /v1/tasks/nhl/run-daily  (protected by internal token)
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/v1/tasks/nhl/run-daily", tags=["Tasks"])
+async def run_nhl_daily_task(
+    background_tasks: BackgroundTasks,
+    body: NHLRunDailyRequest = Body(default=NHLRunDailyRequest()),
+    axiom_internal_token: Optional[str] = Header(
+        default=None, alias="AXIOM-INTERNAL-TOKEN"
+    ),
+):
+    """
+    Trigger the NHL daily player scoring pipeline.
+    Returns immediately — pipeline runs in the background.
+    Results are saved to the database; read them via GET /v1/nhl/players/today.
+    Protected: requires AXIOM-INTERNAL-TOKEN header.
+    """
+    if axiom_internal_token != settings.AXIOM_INTERNAL_TOKEN:
+        raise HTTPException(
+            status_code=403, detail="Invalid or missing AXIOM-INTERNAL-TOKEN."
+        )
+
+    dry_run   = body.dry_run
+    game_date = body.game_date  # None = today inside the pipeline
+    log.info(
+        "NHL pipeline triggered",
+        timestamp=datetime.utcnow().isoformat(),
+        game_date=game_date or "today",
+        dry_run=dry_run,
+    )
+
+    async def _run_nhl_pipeline_task() -> None:
+        from app.tasks.nhl_pipeline import run_nhl_pipeline
+        try:
+            result = await run_nhl_pipeline(game_date=game_date, dry_run=dry_run)
+            log.info(
+                "NHL background pipeline complete",
+                status=result.get("status"),
+                goalies_scored=result.get("goalies_scored"),
+                skaters_scored=result.get("skaters_scored"),
+                elapsed=result.get("elapsed_seconds"),
+            )
+        except Exception as exc:
+            log.error("NHL background pipeline failed", error=str(exc))
+
+    background_tasks.add_task(_run_nhl_pipeline_task)
+
+    return {
+        "status":    "started",
+        "game_date": game_date or str(date.today()),
+        "dry_run":   dry_run,
+        "message": (
+            "NHL pipeline is running in the background. "
+            "Results will be available at GET /v1/nhl/players/today once complete."
+        ),
     }

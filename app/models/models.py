@@ -1,7 +1,7 @@
 """
 SQLAlchemy ORM models for the Axiom database (axiom_db).
 
-Tables:
+MLB tables:
   - games
   - probable_pitchers
   - sportsbook_props
@@ -14,6 +14,19 @@ Tables:
   - axiom_game_lineup
   - pipeline_run_log
   - api_keys
+
+NFL tables (nfl_ prefix — zero collision risk with MLB tables):
+  - nfl_games
+  - nfl_qb_starters
+  - nfl_qb_features_daily
+  - nfl_model_outputs_daily
+
+NHL tables (nhl_ prefix — zero collision risk with MLB/NFL tables):
+  - nhl_games
+  - nhl_game_rosters
+  - nhl_goalie_features_daily
+  - nhl_skater_features_daily
+  - nhl_model_outputs_daily
 """
 import uuid
 from datetime import date, datetime
@@ -52,6 +65,11 @@ class Game(Base):
     # Umpire
     home_plate_umpire_id: Mapped[Optional[str]] = mapped_column(String(32))
     home_plate_umpire_name: Mapped[Optional[str]] = mapped_column(String(128))
+
+    # Market lines (from The Rundown)
+    game_total:      Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_moneyline:  Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    away_moneyline:  Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
 
     status: Mapped[str] = mapped_column(String(32), default="scheduled")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -246,13 +264,21 @@ class ModelOutputDaily(Base):
     market_type: Mapped[str] = mapped_column(String(32), nullable=False)
 
     # Index scores
+    hssi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     husi: Mapped[Optional[float]] = mapped_column(Float)
+    kssi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kusi: Mapped[Optional[float]] = mapped_column(Float)
+    hssi_base: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     husi_base: Mapped[Optional[float]] = mapped_column(Float)
+    kssi_base: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kusi_base: Mapped[Optional[float]] = mapped_column(Float)
+    hssi_interaction: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     husi_interaction: Mapped[Optional[float]] = mapped_column(Float)
+    kssi_interaction: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kusi_interaction: Mapped[Optional[float]] = mapped_column(Float)
+    hssi_volatility: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     husi_volatility: Mapped[Optional[float]] = mapped_column(Float)
+    kssi_volatility: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kusi_volatility: Mapped[Optional[float]] = mapped_column(Float)
 
     # Projections
@@ -390,7 +416,9 @@ class MLTrainingSample(Base):
     ens_air: Mapped[Optional[float]] = mapped_column(Float)
 
     # ── Formula engine outputs (used as ML inputs — ML learns when to agree/disagree)
+    formula_hssi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     formula_husi: Mapped[Optional[float]] = mapped_column(Float)
+    formula_kssi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     formula_kusi: Mapped[Optional[float]] = mapped_column(Float)
     formula_proj_hits: Mapped[Optional[float]] = mapped_column(Float)
     formula_proj_ks: Mapped[Optional[float]] = mapped_column(Float)
@@ -449,17 +477,27 @@ class MLModelOutput(Base):
     # ── ML predictions
     ml_proj_hits: Mapped[Optional[float]] = mapped_column(Float)
     ml_proj_ks: Mapped[Optional[float]] = mapped_column(Float)
+    ml_hssi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     ml_husi: Mapped[Optional[float]] = mapped_column(Float)
+    ml_kssi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     ml_kusi: Mapped[Optional[float]] = mapped_column(Float)
+    ml_hssi_grade: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
     ml_husi_grade: Mapped[Optional[str]] = mapped_column(String(4))
+    ml_kssi_grade: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
     ml_kusi_grade: Mapped[Optional[str]] = mapped_column(String(4))
 
     # ── Comparison to formula
+    hssi_delta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     husi_delta: Mapped[Optional[float]] = mapped_column(Float)   # ml - formula
+    kssi_delta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kusi_delta: Mapped[Optional[float]] = mapped_column(Float)
+    hssi_divergence: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     husi_divergence: Mapped[Optional[str]] = mapped_column(String(16))   # ALIGNED/DIVERGENT/CONFLICT
+    kssi_divergence: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     kusi_divergence: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_hssi_grade: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     consensus_husi_grade: Mapped[Optional[str]] = mapped_column(String(8))
+    consensus_kssi_grade: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     consensus_kusi_grade: Mapped[Optional[str]] = mapped_column(String(8))
 
     # ── Model metadata
@@ -542,9 +580,13 @@ class AxiomPitcherStats(Base):
     season_gb_pct: Mapped[Optional[float]] = mapped_column(Float)
 
     # ── Axiom proprietary layer (our formula outputs — built by us, owned by us)
+    axiom_hssi_avg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     axiom_husi_avg: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_kssi_avg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     axiom_kusi_avg: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_hssi_trend: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     axiom_husi_trend: Mapped[Optional[float]] = mapped_column(Float)
+    axiom_kssi_trend: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     axiom_kusi_trend: Mapped[Optional[float]] = mapped_column(Float)
     axiom_starts_scored: Mapped[Optional[int]] = mapped_column(Integer)
 
@@ -620,6 +662,7 @@ class PipelineRunLog(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    sport: Mapped[Optional[str]] = mapped_column(String(8))  # "MLB" | "NFL" | "NHL" — nullable for backward compat
     target_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)  # "success" | "error" | "no_data"
     pitchers_scored: Mapped[int] = mapped_column(Integer, default=0)
@@ -640,3 +683,270 @@ class ApiKey(Base):
     client_name: Mapped[str] = mapped_column(String(128), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ═════════════════════════════════════════════════════════════
+# NFL TABLES
+# All prefixed with nfl_ — zero collision risk with MLB tables.
+# ═════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────
+# nfl_games — one row per NFL game
+# ─────────────────────────────────────────────────────────────
+class NFLGame(Base):
+    __tablename__ = "nfl_games"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    game_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    season_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    week: Mapped[int] = mapped_column(Integer, nullable=False)
+    home_team: Mapped[str] = mapped_column(String(64), nullable=False)
+    away_team: Mapped[str] = mapped_column(String(64), nullable=False)
+    stadium: Mapped[Optional[str]] = mapped_column(String(128))
+    surface: Mapped[Optional[str]] = mapped_column(String(32))
+    is_dome: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    starters: Mapped[list["NFLQBStarter"]] = relationship(back_populates="game")
+    features: Mapped[list["NFLQBFeaturesDaily"]] = relationship(back_populates="game")
+    outputs: Mapped[list["NFLModelOutputDaily"]] = relationship(back_populates="game")
+
+
+# ─────────────────────────────────────────────────────────────
+# nfl_qb_starters — one row per QB starting assignment per week
+# ─────────────────────────────────────────────────────────────
+class NFLQBStarter(Base):
+    __tablename__ = "nfl_qb_starters"
+    __table_args__ = (UniqueConstraint("game_id", "qb_name", name="uq_nfl_starter_game_qb"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(64), ForeignKey("nfl_games.game_id"), nullable=False, index=True)
+    qb_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    team: Mapped[str] = mapped_column(String(64), nullable=False)
+    opponent: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_home: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    injury_designation: Mapped[Optional[str]] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NFLGame"] = relationship(back_populates="starters")
+
+
+# ─────────────────────────────────────────────────────────────
+# nfl_qb_features_daily — intermediate block scores, one row per QB per week
+# ─────────────────────────────────────────────────────────────
+class NFLQBFeaturesDaily(Base):
+    __tablename__ = "nfl_qb_features_daily"
+    __table_args__ = (UniqueConstraint("game_id", "qb_name", name="uq_nfl_features_game_qb"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(64), ForeignKey("nfl_games.game_id"), nullable=False, index=True)
+    qb_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    team: Mapped[str] = mapped_column(String(64), nullable=False)
+    week: Mapped[int] = mapped_column(Integer, nullable=False)
+    season_year: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # ── QPYI block scores (0–100 each)
+    osw_score: Mapped[Optional[float]] = mapped_column(Float)
+    qsr_score: Mapped[Optional[float]] = mapped_column(Float)
+    gsp_score: Mapped[Optional[float]] = mapped_column(Float)
+    scb_score: Mapped[Optional[float]] = mapped_column(Float)
+    pdr_score: Mapped[Optional[float]] = mapped_column(Float)
+    ens_score: Mapped[Optional[float]] = mapped_column(Float)
+    dsr_score: Mapped[Optional[float]] = mapped_column(Float)
+    rct_score: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── QTDI-specific block scores (0–100 each)
+    ord_score:    Mapped[Optional[float]] = mapped_column(Float)
+    qtr_score:    Mapped[Optional[float]] = mapped_column(Float)
+    gsp_td_score: Mapped[Optional[float]] = mapped_column(Float)
+    scb_td_score: Mapped[Optional[float]] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NFLGame"] = relationship(back_populates="features")
+
+
+# ─────────────────────────────────────────────────────────────
+# nfl_model_outputs_daily — final scored output, one row per QB per market per week
+# ─────────────────────────────────────────────────────────────
+class NFLModelOutputDaily(Base):
+    __tablename__ = "nfl_model_outputs_daily"
+    __table_args__ = (
+        UniqueConstraint("game_id", "qb_name", "market", name="uq_nfl_output_game_qb_market"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(64), ForeignKey("nfl_games.game_id"), nullable=False, index=True)
+    qb_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    team: Mapped[str] = mapped_column(String(64), nullable=False)
+    opponent: Mapped[str] = mapped_column(String(64), nullable=False)
+    week: Mapped[int] = mapped_column(Integer, nullable=False)
+    season_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    market: Mapped[str] = mapped_column(String(32), nullable=False)  # "passing_yards" | "touchdowns"
+
+    # ── Index scores
+    qpyi_score: Mapped[Optional[float]] = mapped_column(Float)
+    qtdi_score: Mapped[Optional[float]] = mapped_column(Float)
+    grade: Mapped[Optional[str]] = mapped_column(String(8))
+
+    # ── Projection
+    projected_value: Mapped[Optional[float]] = mapped_column(Float)
+    prop_line: Mapped[Optional[float]] = mapped_column(Float)
+    edge: Mapped[Optional[float]] = mapped_column(Float)  # projected_value minus prop_line
+    signal_tag: Mapped[Optional[str]] = mapped_column(String(32))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NFLGame"] = relationship(back_populates="outputs")
+
+
+# ══ NHL Tables ═══════════════════════════════════════════════════════════════
+# All prefixed with nhl_ — zero collision risk with MLB/NFL tables.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────
+# nhl_games — one row per NHL game
+# ─────────────────────────────────────────────────────────────
+class NHLGame(Base):
+    __tablename__ = "nhl_games"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    game_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    season_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    series_game_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    home_team: Mapped[str] = mapped_column(String(16), nullable=False)
+    away_team: Mapped[str] = mapped_column(String(16), nullable=False)
+    home_series_wins: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    away_series_wins: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    venue: Mapped[Optional[str]] = mapped_column(String(128))
+    is_playoff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    rosters: Mapped[list["NHLGameRoster"]] = relationship(back_populates="game")
+    goalie_features: Mapped[list["NHLGoalieFeaturesDaily"]] = relationship(back_populates="game")
+    skater_features: Mapped[list["NHLSkaterFeaturesDaily"]] = relationship(back_populates="game")
+    outputs: Mapped[list["NHLModelOutputDaily"]] = relationship(back_populates="game")
+
+
+# ─────────────────────────────────────────────────────────────
+# nhl_game_rosters — one row per player per game
+# ─────────────────────────────────────────────────────────────
+class NHLGameRoster(Base):
+    __tablename__ = "nhl_game_rosters"
+    __table_args__ = (UniqueConstraint("game_id", "player_id", name="uq_nhl_roster_game_player"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(32), ForeignKey("nhl_games.game_id"), nullable=False, index=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    player_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    team: Mapped[str] = mapped_column(String(16), nullable=False)
+    opponent: Mapped[str] = mapped_column(String(16), nullable=False)
+    position: Mapped[str] = mapped_column(String(8), nullable=False)
+    is_home: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    line_number: Mapped[Optional[int]] = mapped_column(Integer)
+    pp_unit: Mapped[Optional[int]] = mapped_column(Integer)
+    injury_designation: Mapped[Optional[str]] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NHLGame"] = relationship(back_populates="rosters")
+
+
+# ─────────────────────────────────────────────────────────────
+# nhl_goalie_features_daily — GSAI block scores, one row per goalie per game
+# ─────────────────────────────────────────────────────────────
+class NHLGoalieFeaturesDaily(Base):
+    __tablename__ = "nhl_goalie_features_daily"
+    __table_args__ = (UniqueConstraint("game_id", "player_id", name="uq_nhl_goalie_feat_game_player"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(32), ForeignKey("nhl_games.game_id"), nullable=False, index=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    player_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    team: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # ── GSAI block scores (0–100 each)
+    gsai_score: Mapped[Optional[float]] = mapped_column(Float)
+    gss_score: Mapped[Optional[float]] = mapped_column(Float)   # Goalie Save Suppression   29%
+    osq_score: Mapped[Optional[float]] = mapped_column(Float)   # Opponent Shooting Quality  24%
+    top_score: Mapped[Optional[float]] = mapped_column(Float)   # Tactical / Operational     18%
+    gen_score: Mapped[Optional[float]] = mapped_column(Float)   # Game Environment           16%
+    rfs_score: Mapped[Optional[float]] = mapped_column(Float)   # Referee Flow Score          8%
+    tsc_score: Mapped[Optional[float]] = mapped_column(Float)   # Team Structure & Coverage   5%
+
+    projected_shots: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NHLGame"] = relationship(back_populates="goalie_features")
+
+
+# ─────────────────────────────────────────────────────────────
+# nhl_skater_features_daily — PPSI block scores, one row per skater per game
+# ─────────────────────────────────────────────────────────────
+class NHLSkaterFeaturesDaily(Base):
+    __tablename__ = "nhl_skater_features_daily"
+    __table_args__ = (UniqueConstraint("game_id", "player_id", name="uq_nhl_skater_feat_game_player"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(32), ForeignKey("nhl_games.game_id"), nullable=False, index=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    player_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    team: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # ── PPSI block scores (0–100 each)
+    ppsi_score: Mapped[Optional[float]] = mapped_column(Float)
+    osr_score: Mapped[Optional[float]] = mapped_column(Float)   # Opponent Scoring Resistance 28%
+    pmr_score: Mapped[Optional[float]] = mapped_column(Float)   # Player Matchup Rating       22%
+    per_score: Mapped[Optional[float]] = mapped_column(Float)   # Player Efficiency Rating    18%
+    pop_score: Mapped[Optional[float]] = mapped_column(Float)   # Points Operational          14%
+    rps_score: Mapped[Optional[float]] = mapped_column(Float)   # Referee PP Score            10%
+    tld_score: Mapped[Optional[float]] = mapped_column(Float)   # Top-Line Deployment          8%
+
+    # ── Projections
+    projected_pts: Mapped[Optional[float]] = mapped_column(Float)
+    projected_sog: Mapped[Optional[float]] = mapped_column(Float)
+    projected_goals: Mapped[Optional[float]] = mapped_column(Float)
+    projected_assists: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NHLGame"] = relationship(back_populates="skater_features")
+
+
+# ─────────────────────────────────────────────────────────────
+# nhl_model_outputs_daily — final scored output, one row per player per market per game
+# ─────────────────────────────────────────────────────────────
+class NHLModelOutputDaily(Base):
+    __tablename__ = "nhl_model_outputs_daily"
+    __table_args__ = (
+        UniqueConstraint("game_id", "player_id", "market", name="uq_nhl_output_game_player_market"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(String(32), ForeignKey("nhl_games.game_id"), nullable=False, index=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    player_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    team: Mapped[str] = mapped_column(String(16), nullable=False)
+    opponent: Mapped[str] = mapped_column(String(16), nullable=False)
+    position: Mapped[str] = mapped_column(String(8), nullable=False)
+    market: Mapped[str] = mapped_column(String(32), nullable=False)  # points | goals | assists | shots_on_goal | shots_faced
+
+    # ── Index scores
+    gsai_score: Mapped[Optional[float]] = mapped_column(Float)
+    ppsi_score: Mapped[Optional[float]] = mapped_column(Float)
+    grade: Mapped[Optional[str]] = mapped_column(String(8))
+
+    # ── Projection and prop line
+    projected_value: Mapped[float] = mapped_column(Float, nullable=False)
+    prop_line: Mapped[Optional[float]] = mapped_column(Float)
+    edge: Mapped[Optional[float]] = mapped_column(Float)        # projected_value minus prop_line
+    signal_tag: Mapped[Optional[str]] = mapped_column(String(32))
+
+    # ── ML engine
+    ml_projection: Mapped[Optional[float]] = mapped_column(Float)
+    ml_signal: Mapped[Optional[str]] = mapped_column(String(16))  # ALIGNED | LEAN | SPLIT
+
+    playoff_discount_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    game: Mapped["NHLGame"] = relationship(back_populates="outputs")

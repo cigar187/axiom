@@ -1,5 +1,5 @@
 """
-NHL Live Report — GSAUI + PPUI
+NHL Live Report — GSAI + PPSI
 Fetches live data from the public NHL API and runs the scoring engines
 for today's playoff games.
 
@@ -19,8 +19,8 @@ from datetime import date, timedelta
 from app.core.nhl.features import (
     NHLGameContext, NHLGoalieFeatureSet, NHLSkaterFeatureSet
 )
-from app.core.nhl.gsaui import compute_gsaui
-from app.core.nhl.ppui import compute_ppui
+from app.core.nhl.gsai import compute_gsai
+from app.core.nhl.ppsi import compute_ppsi
 from app.core.nhl.ml_engine import (
     NHLPlayerMLEngine, parse_game_log, compute_signal
 )
@@ -693,158 +693,160 @@ def get_roster_from_boxscore(game_id: int, team_abbrev: str) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 GAMES_TODAY = [
-    # ── Rosters verified via NHL API /roster/{team}/current on Apr 28 2026
+    # Rosters verified via NHL API Apr 29 2026
     {
-        "label": "GAME 5 — Boston Bruins @ Buffalo Sabres",
-        "home": "BUF",
-        "away": "BOS",
-        "series_home_wins": 3,
-        "series_away_wins": 1,
+        "label": "GAME 5 — Montreal Canadiens @ Tampa Bay Lightning",
+        "home": "TBL",
+        "away": "MTL",
+        "series_home_wins": 2,
+        "series_away_wins": 2,
         "series_game": 5,
+        "time_et": "7:00 PM ET",
+        "note": "Series tied 2-2. Winner takes the lead.",
+        "home_b2b": False,
+        "away_b2b": False,
+        "home_rest": 2,
+        "away_rest": 2,
+        "home_shots_pg": 31.8,
+        "away_shots_pg": 29.2,
+        "home_ga_pg": 2.80,
+        "away_ga_pg": 3.15,
+        "home_sv_pct": 0.916,
+        "away_sv_pct": 0.904,
+        "home_pp_pct": 0.228,
+        "away_pp_pct": 0.204,
+        "home_pk_pct": 0.822,
+        "away_pk_pct": 0.806,
+        "home_blocks_pg": 12.0,
+        "away_blocks_pg": 11.6,
+        "home_cf_pct": 52.1,
+        "away_cf_pct": 49.4,
+        "home_hd_pg": 13.0,
+        "away_hd_pg": 11.5,
+        "home_goalie": {"id": 8476883, "name": "Andrei Vasilevskiy", "gsax_pg": 0.18, "sv_pct": 0.916},
+        "away_goalie": {"id": 8478470, "name": "Samuel Montembeault", "gsax_pg": 0.06, "sv_pct": 0.904},
+        "home_players": [
+            {"id": 8476453, "name": "Nikita Kucherov",    "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8478010, "name": "Brayden Point",      "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8479542, "name": "Brandon Hagel",      "pos": "LW", "line": 1, "pp": 1},
+            {"id": 8477404, "name": "Jake Guentzel",      "pos": "C",  "line": 2, "pp": 1},
+            {"id": 8478519, "name": "Anthony Cirelli",    "pos": "C",  "line": 2, "pp": 2},
+            {"id": 8477416, "name": "Oliver Bjorkstrand", "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8475167, "name": "Victor Hedman",      "pos": "D",  "line": 1, "pp": 1},
+            {"id": 8474151, "name": "Ryan McDonagh",      "pos": "D",  "line": 1, "pp": 2},
+        ],
+        "away_players": [
+            {"id": 8480018, "name": "Nick Suzuki",        "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8481540, "name": "Cole Caufield",      "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8483515, "name": "Juraj Slafkovsky",   "pos": "LW", "line": 1, "pp": 1},
+            {"id": 8479339, "name": "Patrik Laine",       "pos": "RW", "line": 2, "pp": 1},
+            {"id": 8481523, "name": "Kirby Dach",         "pos": "C",  "line": 2, "pp": 2},
+            {"id": 8484984, "name": "Ivan Demidov",       "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8483457, "name": "Lane Hutson",        "pos": "D",  "line": 1, "pp": 1},
+            {"id": 8476875, "name": "Mike Matheson",      "pos": "D",  "line": 1, "pp": 2},
+        ],
+    },
+    {
+        "label": "GAME 6 — Pittsburgh Penguins @ Philadelphia Flyers",
+        "home": "PHI",
+        "away": "PIT",
+        "series_home_wins": 3,
+        "series_away_wins": 2,
+        "series_game": 6,
         "time_et": "7:30 PM ET",
-        "note": "BUF leads series 3-1. BOS must win to stay alive.",
+        "note": "PHI leads series 3-2. PHI can close out at home.",
+        "home_b2b": False,
+        "away_b2b": False,
+        "home_rest": 2,
+        "away_rest": 2,
+        "home_shots_pg": 30.2,
+        "away_shots_pg": 29.8,
+        "home_ga_pg": 2.90,
+        "away_ga_pg": 3.15,
+        "home_sv_pct": 0.910,
+        "away_sv_pct": 0.908,
+        "home_pp_pct": 0.214,
+        "away_pp_pct": 0.198,
+        "home_pk_pct": 0.818,
+        "away_pk_pct": 0.805,
+        "home_blocks_pg": 13.1,
+        "away_blocks_pg": 12.4,
+        "home_cf_pct": 50.8,
+        "away_cf_pct": 49.2,
+        "home_hd_pg": 11.5,
+        "away_hd_pg": 12.0,
+        "home_goalie": {"id": 8481035, "name": "Samuel Ersson",  "gsax_pg":  0.06, "sv_pct": 0.910},
+        "away_goalie": {"id": 8479973, "name": "Stuart Skinner", "gsax_pg": -0.04, "sv_pct": 0.908},
+        "home_players": [
+            {"id": 8476461, "name": "Sean Couturier",    "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8478439, "name": "Travis Konecny",    "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8484387, "name": "Matvei Michkov",    "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8482159, "name": "Tyson Foerster",    "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8480015, "name": "Owen Tippett",      "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8480220, "name": "Noah Cates",        "pos": "LW", "line": 2, "pp": 2},
+            {"id": 8477948, "name": "Travis Sanheim",    "pos": "D",  "line": 1, "pp": 2},
+            {"id": 8481546, "name": "Cam York",          "pos": "D",  "line": 2, "pp": 2},
+        ],
+        "away_players": [
+            {"id": 8471675, "name": "Sidney Crosby",     "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8471215, "name": "Evgeni Malkin",     "pos": "C",  "line": 2, "pp": 1},
+            {"id": 8476483, "name": "Rickard Rakell",    "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8475810, "name": "Bryan Rust",        "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8477511, "name": "Anthony Mantha",    "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8474578, "name": "Erik Karlsson",     "pos": "D",  "line": 1, "pp": 1},
+            {"id": 8471724, "name": "Kris Letang",       "pos": "D",  "line": 1, "pp": 2},
+        ],
+    },
+    {
+        "label": "GAME 5 — Utah Mammoth @ Vegas Golden Knights",
+        "home": "VGK",
+        "away": "UTA",
+        "series_home_wins": 2,
+        "series_away_wins": 2,
+        "series_game": 5,
+        "time_et": "10:00 PM ET",
+        "note": "Series tied 2-2. Winner takes the lead.",
         "home_b2b": False,
         "away_b2b": False,
         "home_rest": 2,
         "away_rest": 2,
         "home_shots_pg": 32.1,
-        "away_shots_pg": 29.8,
-        "home_ga_pg": 2.75,
-        "away_ga_pg": 3.10,
-        "home_sv_pct": 0.918,
+        "away_shots_pg": 31.4,
+        "home_ga_pg": 3.02,
+        "away_ga_pg": 2.85,
+        "home_sv_pct": 0.914,
         "away_sv_pct": 0.906,
-        "home_pp_pct": 0.231,
-        "away_pp_pct": 0.198,
-        "home_pk_pct": 0.824,
-        "away_pk_pct": 0.808,
-        "home_blocks_pg": 11.2,
-        "away_blocks_pg": 12.8,
+        "home_pp_pct": 0.237,
+        "away_pp_pct": 0.223,
+        "home_pk_pct": 0.816,
+        "away_pk_pct": 0.821,
+        "home_blocks_pg": 13.6,
+        "away_blocks_pg": 11.8,
         "home_cf_pct": 52.4,
-        "away_cf_pct": 48.6,
-        "home_hd_pg": 13.2,
-        "away_hd_pg": 11.8,
-        "home_goalie": {"id": 8480045, "name": "UPL Luukkonen",   "gsax_pg":  0.14, "sv_pct": 0.918},
-        "away_goalie": {"id": 8480280, "name": "Jeremy Swayman",  "gsax_pg":  0.08, "sv_pct": 0.906},
+        "away_cf_pct": 51.2,
+        "home_hd_pg": 13.1,
+        "away_hd_pg": 12.8,
+        "home_goalie": {"id": 8478499, "name": "Adin Hill",        "gsax_pg":  0.18, "sv_pct": 0.914},
+        "away_goalie": {"id": 8478872, "name": "Karel Vejmelka",   "gsax_pg":  0.02, "sv_pct": 0.906},
         "home_players": [
-            {"id": 8479420, "name": "Tage Thompson",    "pos": "C",  "line": 1, "pp": 1},
-            {"id": 8484145, "name": "Zach Benson",      "pos": "LW", "line": 1, "pp": 1},
-            {"id": 8482097, "name": "Jack Quinn",       "pos": "RW", "line": 1, "pp": 1},
-            {"id": 8480064, "name": "Josh Norris",      "pos": "C",  "line": 2, "pp": 1},
-            {"id": 8483468, "name": "Jiri Kulich",      "pos": "C",  "line": 2, "pp": 2},
-            {"id": 8477949, "name": "Alex Tuch",        "pos": "RW", "line": 2, "pp": 2},
-            {"id": 8480839, "name": "Rasmus Dahlin",    "pos": "D",  "line": 1, "pp": 1},
-            {"id": 8482671, "name": "Owen Power",       "pos": "D",  "line": 1, "pp": 2},
-            {"id": 8481524, "name": "Bowen Byram",      "pos": "D",  "line": 2, "pp": 2},
+            {"id": 8478403, "name": "Jack Eichel",           "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8475913, "name": "Mark Stone",            "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8478483, "name": "Mitch Marner",          "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8477964, "name": "Ivan Barbashev",        "pos": "LW", "line": 2, "pp": 1},
+            {"id": 8476881, "name": "Tomas Hertl",           "pos": "C",  "line": 2, "pp": 2},
+            {"id": 8476448, "name": "William Karlsson",      "pos": "C",  "line": 3, "pp": 2},
+            {"id": 8477447, "name": "Shea Theodore",         "pos": "D",  "line": 1, "pp": 1},
+            {"id": 8478397, "name": "Rasmus Andersson",      "pos": "D",  "line": 1, "pp": 2},
         ],
         "away_players": [
-            {"id": 8477956, "name": "David Pastrnak",   "pos": "RW", "line": 1, "pp": 1},
-            {"id": 8477496, "name": "Elias Lindholm",   "pos": "C",  "line": 1, "pp": 1},
-            {"id": 8479999, "name": "Casey Mittelstadt","pos": "C",  "line": 2, "pp": 1},
-            {"id": 8478401, "name": "Pavel Zacha",      "pos": "C",  "line": 2, "pp": 2},
-            {"id": 8478042, "name": "Viktor Arvidsson", "pos": "LW", "line": 2, "pp": 2},
-            {"id": 8479325, "name": "Charlie McAvoy",   "pos": "D",  "line": 1, "pp": 1},
-            {"id": 8476854, "name": "Hampus Lindholm",  "pos": "D",  "line": 1, "pp": 2},
-        ],
-    },
-    {
-        "label": "GAME 5 — Minnesota Wild @ Dallas Stars",
-        "home": "DAL",
-        "away": "MIN",
-        "series_home_wins": 2,
-        "series_away_wins": 2,
-        "series_game": 5,
-        "time_et": "8:00 PM ET",
-        "note": "Series tied 2-2. Winner takes series lead.",
-        "home_b2b": False,
-        "away_b2b": False,
-        "home_rest": 2,
-        "away_rest": 2,
-        "home_shots_pg": 30.8,
-        "away_shots_pg": 29.5,
-        "home_ga_pg": 2.90,
-        "away_ga_pg": 3.05,
-        "home_sv_pct": 0.912,
-        "away_sv_pct": 0.910,
-        "home_pp_pct": 0.225,
-        "away_pp_pct": 0.207,
-        "home_pk_pct": 0.819,
-        "away_pk_pct": 0.812,
-        "home_blocks_pg": 13.1,
-        "away_blocks_pg": 12.4,
-        "home_cf_pct": 51.8,
-        "away_cf_pct": 50.2,
-        "home_hd_pg": 12.5,
-        "away_hd_pg": 11.9,
-        "home_goalie": {"id": 8479979, "name": "Jake Oettinger",    "gsax_pg":  0.12, "sv_pct": 0.912},
-        "away_goalie": {"id": 8479406, "name": "Filip Gustavsson",  "gsax_pg":  0.09, "sv_pct": 0.910},
-        "home_players": [
-            {"id": 8478420, "name": "Mikko Rantanen",   "pos": "RW", "line": 1, "pp": 1},
-            {"id": 8480027, "name": "Jason Robertson",  "pos": "LW", "line": 1, "pp": 1},
-            {"id": 8482740, "name": "Wyatt Johnston",   "pos": "C",  "line": 1, "pp": 1},
-            {"id": 8478449, "name": "Roope Hintz",      "pos": "C",  "line": 2, "pp": 1},
-            {"id": 8475168, "name": "Matt Duchene",     "pos": "C",  "line": 2, "pp": 2},
-            {"id": 8475794, "name": "Tyler Seguin",     "pos": "C",  "line": 3, "pp": 2},
-            {"id": 8480036, "name": "Miro Heiskanen",   "pos": "D",  "line": 1, "pp": 1},
-            {"id": 8481581, "name": "Thomas Harley",    "pos": "D",  "line": 1, "pp": 2},
-        ],
-        "away_players": [
-            {"id": 8478864, "name": "Kirill Kaprizov",  "pos": "LW", "line": 1, "pp": 1},
-            {"id": 8481557, "name": "Matt Boldy",       "pos": "LW", "line": 1, "pp": 1},
-            {"id": 8478493, "name": "Joel Eriksson Ek", "pos": "C",  "line": 1, "pp": 1},
-            {"id": 8475692, "name": "Mats Zuccarello",  "pos": "RW", "line": 2, "pp": 1},
-            {"id": 8475765, "name": "Vlad Tarasenko",   "pos": "RW", "line": 2, "pp": 2},
-            {"id": 8483452, "name": "Hunter Haight",    "pos": "C",  "line": 2, "pp": 2},
-            {"id": 8480800, "name": "Quinn Hughes",     "pos": "D",  "line": 1, "pp": 1},
-            {"id": 8482122, "name": "Brock Faber",      "pos": "D",  "line": 1, "pp": 2},
-        ],
-    },
-    {
-        "label": "GAME 5 — Anaheim Ducks @ Edmonton Oilers",
-        "home": "EDM",
-        "away": "ANA",
-        "series_home_wins": 1,
-        "series_away_wins": 3,
-        "series_game": 5,
-        "time_et": "10:00 PM ET",
-        "note": "ANA leads series 3-1. Oilers must win to stay alive.",
-        "home_b2b": False,
-        "away_b2b": False,
-        "home_rest": 2,
-        "away_rest": 2,
-        "home_shots_pg": 33.2,
-        "away_shots_pg": 28.6,
-        "home_ga_pg": 2.95,
-        "away_ga_pg": 3.20,
-        "home_sv_pct": 0.908,
-        "away_sv_pct": 0.904,
-        "home_pp_pct": 0.248,
-        "away_pp_pct": 0.195,
-        "home_pk_pct": 0.826,
-        "away_pk_pct": 0.811,
-        "home_blocks_pg": 10.9,
-        "away_blocks_pg": 12.2,
-        "home_cf_pct": 53.6,
-        "away_cf_pct": 49.8,
-        "home_hd_pg": 14.1,
-        "away_hd_pg": 11.4,
-        "home_goalie": {"id": 8478971, "name": "Connor Ingram",    "gsax_pg":  0.05, "sv_pct": 0.908},
-        "away_goalie": {"id": 8480843, "name": "Lukas Dostal",     "gsax_pg":  0.03, "sv_pct": 0.904},
-        "home_players": [
-            {"id": 8478402, "name": "Connor McDavid",   "pos": "C",  "line": 1, "pp": 1},
-            {"id": 8477934, "name": "Leon Draisaitl",   "pos": "C",  "line": 2, "pp": 1},
-            {"id": 8475786, "name": "Zach Hyman",       "pos": "LW", "line": 1, "pp": 1},
-            {"id": 8476454, "name": "Ryan Nugent-Hopkins","pos":"C",  "line": 3, "pp": 2},
-            {"id": 8480803, "name": "Evan Bouchard",    "pos": "D",  "line": 1, "pp": 1},
-            {"id": 8475218, "name": "Mattias Ekholm",   "pos": "D",  "line": 1, "pp": 2},
-        ],
-        "away_players": [
-            {"id": 8483445, "name": "Cutter Gauthier",  "pos": "LW", "line": 1, "pp": 1},
-            {"id": 8484153, "name": "Leo Carlsson",     "pos": "C",  "line": 1, "pp": 1},
-            {"id": 8478873, "name": "Troy Terry",       "pos": "RW", "line": 1, "pp": 1},
-            {"id": 8482745, "name": "Mason McTavish",   "pos": "C",  "line": 2, "pp": 1},
-            {"id": 8475798, "name": "Mikael Granlund",  "pos": "C",  "line": 2, "pp": 2},
-            {"id": 8476885, "name": "Jacob Trouba",     "pos": "D",  "line": 1, "pp": 2},
-            {"id": 8483490, "name": "Pavel Mintyukov",  "pos": "D",  "line": 1, "pp": 1},
+            {"id": 8479343, "name": "Clayton Keller",    "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8483431, "name": "Logan Cooley",      "pos": "C",  "line": 1, "pp": 1},
+            {"id": 8482699, "name": "Dylan Guenther",    "pos": "RW", "line": 1, "pp": 1},
+            {"id": 8478474, "name": "Lawson Crouse",     "pos": "LW", "line": 1, "pp": 1},
+            {"id": 8477951, "name": "Nick Schmaltz",     "pos": "C",  "line": 2, "pp": 1},
+            {"id": 8482175, "name": "JJ Peterka",        "pos": "RW", "line": 2, "pp": 2},
+            {"id": 8479410, "name": "Mikhail Sergachev", "pos": "D",  "line": 1, "pp": 1},
+            {"id": 8477346, "name": "MacKenzie Weegar",  "pos": "D",  "line": 1, "pp": 2},
         ],
     },
 ]
@@ -854,12 +856,12 @@ GAMES_TODAY = [
 # Score color helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def gsaui_color(s: float) -> str:
+def gsai_color(s: float) -> str:
     if s >= 62: return GREEN
     if s >= 50: return YELLOW
     return RED
 
-def ppui_color(s: float) -> str:
+def ppsi_color(s: float) -> str:
     if s >= 62: return GREEN
     if s >= 50: return YELLOW
     return RED
@@ -871,9 +873,9 @@ def ppui_color(s: float) -> str:
 
 def run_report():
     print(f"\n{BOLD}{'═' * 90}{RESET}")
-    print(f"{BOLD}  AXIOM NHL LIVE REPORT — {TODAY}  |  Playoff First Round  |  GSAUI + PPUI{RESET}")
+    print(f"{BOLD}  AXIOM NHL LIVE REPORT — {TODAY}  |  Playoff First Round  |  GSAI + PPSI{RESET}")
     print(f"{BOLD}{'═' * 90}{RESET}")
-    print(f"{DIM}  Engines: GSAUI (Goalie Shots-Against Under) · PPUI (Player Points Under){RESET}")
+    print(f"{DIM}  Engines: GSAI (Goalie Shots-Against Under) · PPSI (Player Points Under){RESET}")
     print(f"{DIM}  Data: NHL Public API (api-web.nhle.com)  ·  Ref crew block: neutral (no public crew data){RESET}\n")
 
     for game in GAMES_TODAY:
@@ -900,8 +902,8 @@ def run_report():
 
         # ── GOALIE SECTION ────────────────────────────────────────────────────
 
-        print(f"\n  {BOLD}GOALIE REPORT (GSAUI){RESET}")
-        print(f"  {'GOALIE':<26} {'TEAM':<5} {'GSAUI':>6} {'GRD':>4} {'BASE-SH':>8} {'PROJ-SH':>8}  "
+        print(f"\n  {BOLD}GOALIE REPORT (GSAI){RESET}")
+        print(f"  {'GOALIE':<26} {'TEAM':<5} {'GSAI':>6} {'GRD':>4} {'BASE-SH':>8} {'PROJ-SH':>8}  "
               f"{'OSQ':>5} {'GSS':>5} {'GEN':>5} {'TOP':>5} {'RFS':>5} {'TSC':>5}")
         print(f"  {'─' * 88}")
 
@@ -945,15 +947,15 @@ def run_report():
             f.gss_gsax = norm_gsax(goalie_cfg["gsax_pg"])
 
             b2b_both = game["home_b2b"] and game["away_b2b"]
-            result = compute_gsaui(f, b2b_both=b2b_both)
+            result = compute_gsai(f, b2b_both=b2b_both)
 
-            gsaui = result["gsaui"]
+            gsaui = result["gsai"]
             grade = result["grade"]
             proj = result["projected_shots"]
             base = result["base_shots"]
             blk = result["blocks"]
 
-            col = gsaui_color(gsaui)
+            col = gsai_color(gsaui)
             print(
                 f"  {goalie_cfg['name']:<26} {team:<5} "
                 f"{col}{gsaui:>6.1f}{RESET} {grade:>4} "
@@ -964,12 +966,12 @@ def run_report():
 
         # ── SKATER SECTION ────────────────────────────────────────────────────
         # Two engines run in parallel — same as baseball:
-        #   Engine 1 (Formula/PPUI): deterministic block-score model
+        #   Engine 1 (Formula/PPSI): deterministic block-score model
         #   Engine 2 (ML):           GradientBoosting trained on 2025-26 game logs
         # Both predict the four bettable markets. Signal shows agreement level.
 
-        print(f"\n  {BOLD}PLAYER BETTING MARKETS  —  Engine 1: Formula (PPUI)  |  Engine 2: ML (2025-26 season){RESET}")
-        print(f"  {'PLAYER':<22} {'TEAM':<5} {'POS':<3} {'PPUI':>5}  "
+        print(f"\n  {BOLD}PLAYER BETTING MARKETS  —  Engine 1: Formula (PPSI)  |  Engine 2: ML (2025-26 season){RESET}")
+        print(f"  {'PLAYER':<22} {'TEAM':<5} {'POS':<3} {'PPSI':>5}  "
               f"{'── FORMULA ──':^31}  {'─── ML ENGINE ───':^31}  {'SIGNAL':<7}")
         print(f"  {'':<22} {'':<5} {'':<3} {'':<5}  "
               f"{'P':>6} {'G':>5} {'A':>5} {'SOG':>6}   "
@@ -1008,8 +1010,8 @@ def run_report():
                 edge=edge,
             )
 
-            result   = compute_ppui(f)
-            ppui     = result["ppui"]
+            result   = compute_ppsi(f)
+            ppui     = result["ppsi"]
             grade    = result["grade"]
             proj_pts = result["projected_points"]
 
@@ -1020,7 +1022,7 @@ def run_report():
             # ── Engine 2: ML ────────────────────────────────────────────────
             ml = train_player_ml(player_cfg["id"], player_cfg["name"], is_home_player)
 
-            col = ppui_color(ppui)
+            col = ppsi_color(ppui)
 
             if ml and ml.get("ml_active"):
                 ml_p   = ml["ml_proj_points"]
@@ -1051,14 +1053,14 @@ def run_report():
           f"{GREEN}■ ≥62 Under-favoring{RESET}  "
           f"{YELLOW}■ 50-61 Neutral{RESET}  "
           f"{RED}■ <50 Over-favoring{RESET}")
-    print(f"  GSAUI: Goalie Shots-Against Under Index  |  PROJ-SH = projected shots on goal faced")
-    print(f"  PPUI:  Player Points Under Index (Engine 1 / Formula)")
+    print(f"  GSAI: Goalie Shots-Against Index  |  PROJ-SH = projected shots on goal faced")
+    print(f"  PPSI:  Player Points Scoring Index (Engine 1 / Formula)")
     print(f"  ML:    GradientBoosting trained on each player's full 2025-26 regular season game log (Engine 2)")
     print(f"  Markets: P=Points · G=Goals · A=Assists · SOG=Shots on Goal  (all directly bettable)")
     print(f"\n  {BOLD}Signal:{RESET}  {GREEN}ALIGNED{RESET} = both engines within 10%  "
           f"  {YELLOW}LEAN{RESET} = 10-25% gap  "
           f"  {MAGENTA}SPLIT{RESET} = >25% gap (pay attention)")
-    print(f"\n  {DIM}PPUI uses NHL EDGE speed/tracking data internally — not shown, but shapes the formula score.{RESET}")
+    print(f"\n  {DIM}PPSI uses NHL EDGE speed/tracking data internally — not shown, but shapes the formula score.{RESET}")
     print(f"  {DIM}ML trains on rolling form (recent games weight naturally more than early-season games).{RESET}")
     print(f"\n  {BOLD}NOTE:{RESET} Re-run before placing any bet — API data updates continuously.")
     print(f"{'═' * 90}\n")

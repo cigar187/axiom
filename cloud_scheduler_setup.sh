@@ -175,3 +175,99 @@ echo "  Or open the console:"
 echo "    https://console.cloud.google.com/cloudscheduler?project=${PROJECT}"
 echo "════════════════════════════════════════════════════════"
 echo ""
+
+# NFL QB pipeline — fires every Sunday at 9 AM ET
+NFL_JOB_NAME="axiom-nfl-weekly-trigger"
+NFL_ENDPOINT="${SERVICE_URL}/v1/tasks/nfl/run-weekly"
+
+echo "==> Creating NFL Cloud Scheduler job '${NFL_JOB_NAME}'..."
+
+if gcloud scheduler jobs describe "${NFL_JOB_NAME}" \
+     --project="${PROJECT}" \
+     --location="${REGION}" &>/dev/null; then
+  echo "    Existing NFL job found — deleting for clean re-create..."
+  gcloud scheduler jobs delete "${NFL_JOB_NAME}" \
+    --project="${PROJECT}" \
+    --location="${REGION}" \
+    --quiet
+fi
+
+gcloud scheduler jobs create http "${NFL_JOB_NAME}" \
+  --project="${PROJECT}" \
+  --location="${REGION}" \
+  --schedule="0 9 * * 0" \
+  --time-zone="America/New_York" \
+  --uri="${NFL_ENDPOINT}" \
+  --http-method=POST \
+  --message-body='{"dry_run": false}' \
+  --headers="Content-Type=application/json,AXIOM-INTERNAL-TOKEN=${AXIOM_INTERNAL_TOKEN}" \
+  --oidc-service-account-email="${SCHEDULER_SA}" \
+  --oidc-token-audience="${SERVICE_URL}" \
+  --attempt-deadline=600s \
+  --max-retry-attempts=3 \
+  --max-backoff=3600s \
+  --min-backoff=300s \
+  --description="NFL QB pipeline — fires every Sunday at 9 AM ET"
+
+echo ""
+echo "════════════════════════════════════════════════════════"
+echo "  ✓ NFL Cloud Scheduler job created successfully!"
+echo ""
+echo "  Schedule   : Every Sunday at 9:00 AM Eastern Time"
+echo "  Endpoint   : ${NFL_ENDPOINT}"
+echo "  Retries    : 3 (with 5-minute initial backoff)"
+echo "  Timeout    : 10 minutes per attempt"
+echo ""
+echo "  To trigger it manually RIGHT NOW (for testing):"
+echo "    gcloud scheduler jobs run ${NFL_JOB_NAME} \\"
+echo "      --project=${PROJECT} --location=${REGION}"
+echo "════════════════════════════════════════════════════════"
+echo ""
+
+# NHL player pipeline — fires every day at 10 AM ET during playoff season
+NHL_JOB_NAME="axiom-nhl-daily-trigger"
+NHL_ENDPOINT="${SERVICE_URL}/v1/tasks/nhl/run-daily"
+
+echo "==> Creating NHL Cloud Scheduler job '${NHL_JOB_NAME}'..."
+
+if gcloud scheduler jobs describe "${NHL_JOB_NAME}" \
+     --project="${PROJECT}" \
+     --location="${REGION}" &>/dev/null; then
+  echo "    Existing NHL job found — deleting for clean re-create..."
+  gcloud scheduler jobs delete "${NHL_JOB_NAME}" \
+    --project="${PROJECT}" \
+    --location="${REGION}" \
+    --quiet
+fi
+
+gcloud scheduler jobs create http "${NHL_JOB_NAME}" \
+  --project="${PROJECT}" \
+  --location="${REGION}" \
+  --schedule="0 10 * * *" \
+  --time-zone="America/New_York" \
+  --uri="${NHL_ENDPOINT}" \
+  --http-method=POST \
+  --message-body='{"dry_run": false, "game_date": null}' \
+  --headers="Content-Type=application/json,AXIOM-INTERNAL-TOKEN=${AXIOM_INTERNAL_TOKEN}" \
+  --oidc-service-account-email="${SCHEDULER_SA}" \
+  --oidc-token-audience="${SERVICE_URL}" \
+  --attempt-deadline=600s \
+  --max-retry-attempts=3 \
+  --max-backoff=3600s \
+  --min-backoff=300s \
+  --description="NHL player pipeline — fires every day at 10 AM ET during playoff season"
+
+echo ""
+echo "════════════════════════════════════════════════════════"
+echo "  ✓ NHL Cloud Scheduler job created successfully!"
+echo ""
+echo "  Schedule   : Every day at 10:00 AM Eastern Time"
+echo "  Endpoint   : ${NHL_ENDPOINT}"
+echo "  Retries    : 3 (with 5-minute initial backoff)"
+echo "  Timeout    : 10 minutes per attempt"
+echo ""
+echo "  To trigger it manually RIGHT NOW (for testing):"
+echo "    gcloud scheduler jobs run ${NHL_JOB_NAME} \\"
+echo "      --project=${PROJECT} --location=${REGION}"
+echo "════════════════════════════════════════════════════════"
+echo ""

@@ -74,8 +74,8 @@ from typing import Optional
 import numpy as np
 
 from app.core.features import PitcherFeatureSet
-from app.core.husi import compute_husi
-from app.core.kusi import compute_kusi
+from app.core.hssi import compute_hssi
+from app.core.kssi import compute_kssi
 from app.utils.ip_window import expected_ip
 from app.utils.logging import get_logger
 from app.utils.manager_profiles import get_manager_style
@@ -264,8 +264,8 @@ class SimulationEngine:
         # ── Step 1: Anchor run — get base values from the full formula
         # base_hits / base_ks are PRE-HUSI-factor, PRE-MGS (raw season-rate × exp_ip / 9).
         # husi_base / kusi_base are the formula's final scored values after all blocks.
-        h0 = compute_husi(features, silent=True)
-        k0 = compute_kusi(features, silent=True)
+        h0 = compute_hssi(features, silent=True)
+        k0 = compute_kssi(features, silent=True)
 
         husi_base = float(h0["husi"])        # Formula's final HUSI score
         kusi_base = float(k0["kusi"])        # Formula's final KUSI score

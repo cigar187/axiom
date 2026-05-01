@@ -6,12 +6,13 @@ Execution order:
   2. Fetch prop lines from The Rundown API
   3. Fetch umpire profiles from scraper (returns neutral stubs for now)
   4. Build PitcherFeatureSet for each pitcher (feature_builder.py)
-  5. Run compute_husi + compute_kusi for each pitcher
+  5. Run compute_hssi + compute_kssi for each pitcher
   6. Save all results to the database (unless dry_run=True)
   7. Return summary
 
 Safety rule: if the pipeline returns 0 pitchers, nothing is written to the database.
 """
+import difflib
 import time
 from datetime import date, datetime
 from typing import Optional
@@ -21,8 +22,8 @@ from sqlalchemy import select, delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.features import PitcherFeatureSet
-from app.core.husi import compute_husi
-from app.core.kusi import compute_kusi
+from app.core.hssi import compute_hssi
+from app.core.kssi import compute_kssi
 from app.core.simulation import SimulationEngine
 from app.models.models import (
     Game, ProbablePitcher, SportsbookProp,
@@ -205,6 +206,15 @@ async def run_daily_pipeline(
         props = {}
 
     log.info("Props fetched", pitchers_with_props=len(props))
+
+    try:
+        game_lines_data = await rundown.fetch_game_lines(target_date)
+    except Exception as exc:
+        log.warning("Rundown game lines fetch failed, continuing without game lines",
+                    error=str(exc))
+        game_lines_data = {}
+
+    log.info("Game lines fetched", games_with_lines=len(game_lines_data))
 
     # ─────────────────────────────────────────────────────────
     # Step 3a: Load umpire profiles from our database
@@ -476,6 +486,26 @@ async def run_daily_pipeline(
     game_lookup = {g["game_id"]: g for g in games_data}
     scored_pitchers = []
 
+    # Merge Rundown game lines into game_lookup by fuzzy home team name match.
+    # game_lines_data is keyed by Rundown event_id (not MLB game_id), so we
+    # match on home team name since that is stable across both APIs.
+    for _event_id, gl in game_lines_data.items():
+        rundown_home = (gl.get("home_team_name") or "").lower()
+        for g in game_lookup.values():
+            mlb_home = (g.get("home_team") or "").lower()
+            if rundown_home and mlb_home and (
+                difflib.SequenceMatcher(None, rundown_home, mlb_home).ratio() >= 0.82
+            ):
+                g["game_total"]     = gl.get("game_total")
+                g["home_moneyline"] = gl.get("home_moneyline")
+                g["away_moneyline"] = gl.get("away_moneyline")
+                log.debug("Game lines merged",
+                          game_id=g["game_id"],
+                          total=gl.get("game_total"),
+                          home_ml=gl.get("home_moneyline"),
+                          away_ml=gl.get("away_moneyline"))
+                break
+
     for pid, pitcher_data in pitchers_data.items():
         game_id = pitcher_data.get("game_id", "")
         game_info = game_lookup.get(game_id, {})
@@ -522,8 +552,8 @@ async def run_daily_pipeline(
             # Stamp the numeric team_id so the simulation can find the manager profile
             features.team_id_numeric = str(own_team_id)
 
-            husi_result = compute_husi(features)
-            kusi_result = compute_kusi(features)
+            hssi_result = compute_hssi(features)
+            kssi_result = compute_kssi(features)
 
             # ── Risk Profile (automatic — no manual commands needed)
             from app.services.risk_scorer import compute_risk_profile
@@ -531,8 +561,10 @@ async def run_daily_pipeline(
 
             scored_pitchers.append({
                 "features": features,
-                "husi": husi_result,
-                "kusi": kusi_result,
+                "hssi": hssi_result,
+                "husi": hssi_result,
+                "kssi": kssi_result,
+                "kusi": kssi_result,
                 "risk": risk_profile,
                 "game_info": game_info,
                 "pitcher_data": pitcher_data,
@@ -541,8 +573,8 @@ async def run_daily_pipeline(
             log.info(
                 "Pitcher scored",
                 pitcher=features.pitcher_name,
-                husi=husi_result["husi"],
-                kusi=kusi_result["kusi"],
+                hssi=hssi_result["hssi"],
+                kssi=kssi_result["kssi"],
             )
 
         except Exception as exc:
@@ -647,12 +679,18 @@ async def _persist_results(
             is_dome=g.get("is_dome", False),
             weather_condition=g.get("weather_condition"),
             status=g.get("status", "scheduled"),
+            game_total=g.get("game_total"),
+            home_moneyline=g.get("home_moneyline"),
+            away_moneyline=g.get("away_moneyline"),
         ).on_conflict_do_update(
             index_elements=["game_id"],
             set_={
                 "status": g.get("status", "scheduled"),
                 "temperature_f": g.get("temperature_f"),
                 "wind_direction": g.get("wind_direction"),
+                "game_total":     g.get("game_total"),
+                "home_moneyline": g.get("home_moneyline"),
+                "away_moneyline": g.get("away_moneyline"),
             },
         )
         await db.execute(stmt)
@@ -703,8 +741,10 @@ async def _persist_results(
     # Upsert feature scores
     for result in scored_pitchers:
         features: PitcherFeatureSet = result["features"]
-        husi_r = result["husi"]
-        kusi_r = result["kusi"]
+        hssi_r = result["hssi"]
+        husi_r = hssi_r
+        kssi_r = result["kssi"]
+        kusi_r = kssi_r
         risk_r = result.get("risk", {})
 
         stmt = pg_insert(PitcherFeaturesDaily).values(
@@ -775,8 +815,10 @@ async def _persist_results(
     # Upsert model outputs
     for result in scored_pitchers:
         features: PitcherFeatureSet = result["features"]
-        husi_r = result["husi"]
-        kusi_r = result["kusi"]
+        hssi_r = result["hssi"]
+        husi_r = hssi_r
+        kssi_r = result["kssi"]
+        kusi_r = kssi_r
         sim_r = result.get("sim")  # SimulationResult or None
         name_key = features.pitcher_name.strip().lower()
         pitcher_props = props.get(name_key, {})
@@ -784,8 +826,8 @@ async def _persist_results(
         for market_type, index_score, index_key, proj_key, line_val, under_odds, sbok in [
             (
                 "hits_allowed",
-                husi_r["husi"],
-                "husi",
+                hssi_r["hssi"],
+                "hssi",
                 "projected_hits",
                 features.hits_line,
                 features.hits_under_odds,
@@ -793,15 +835,15 @@ async def _persist_results(
             ),
             (
                 "strikeouts",
-                kusi_r["kusi"],
-                "kusi",
+                kssi_r["kssi"],
+                "kssi",
                 "projected_ks",
                 features.k_line,
                 features.k_under_odds,
                 pitcher_props.get("strikeouts", {}).get("sportsbook"),
             ),
         ]:
-            projection = husi_r.get("projected_hits") if market_type == "hits_allowed" else kusi_r.get("projected_ks")
+            projection = hssi_r.get("projected_hits") if market_type == "hits_allowed" else kssi_r.get("projected_ks")
             stat_edge = None
             if projection is not None and line_val is not None:
                 stat_edge = round(line_val - projection, 2)  # positive = under edge
@@ -810,7 +852,7 @@ async def _persist_results(
             if under_odds is not None:
                 implied_prob = round(american_odds_to_implied_prob(under_odds), 4)
 
-            grade = husi_r["grade"] if market_type == "hits_allowed" else kusi_r["grade"]
+            grade = hssi_r["grade"] if market_type == "hits_allowed" else kssi_r["grade"]
             confidence = _confidence_label(index_score)
 
             notes_parts = []
@@ -828,14 +870,14 @@ async def _persist_results(
                 game_id=features.game_id,
                 game_date=target_date,
                 market_type=market_type,
-                husi=husi_r["husi"],
-                kusi=kusi_r["kusi"],
-                husi_base=husi_r["husi_base"],
-                kusi_base=kusi_r["kusi_base"],
-                husi_interaction=husi_r["husi_interaction"],
-                kusi_interaction=kusi_r["kusi_interaction"],
-                husi_volatility=husi_r["husi_volatility"],
-                kusi_volatility=kusi_r["kusi_volatility"],
+                hssi=hssi_r["hssi"],
+                kssi=kssi_r["kssi"],
+                hssi_base=hssi_r["hssi_base"],
+                kssi_base=kssi_r["kssi_base"],
+                hssi_interaction=hssi_r["hssi_interaction"],
+                kssi_interaction=kssi_r["kssi_interaction"],
+                hssi_volatility=hssi_r["hssi_volatility"],
+                kssi_volatility=kssi_r["kssi_volatility"],
                 base_hits=husi_r.get("base_hits"),
                 base_ks=kusi_r.get("base_ks"),
                 projected_hits=husi_r.get("projected_hits"),
@@ -876,10 +918,10 @@ async def _persist_results(
             ).on_conflict_do_update(
                 constraint="uq_output_pitcher_game_market",
                 set_={
-                    "husi": husi_r["husi"],
-                    "kusi": kusi_r["kusi"],
-                    "projected_hits": husi_r.get("projected_hits"),
-                    "projected_ks": kusi_r.get("projected_ks"),
+                    "hssi": hssi_r["hssi"],
+                    "kssi": kssi_r["kssi"],
+                    "projected_hits": hssi_r.get("projected_hits"),
+                    "projected_ks": kssi_r.get("projected_ks"),
                     "stat_edge": stat_edge,
                     "grade": grade,
                     "confidence": confidence,
@@ -931,8 +973,8 @@ async def _persist_results(
             formula_outputs_by_pitcher: dict[str, dict] = {}
             for result in scored_pitchers:
                 f: PitcherFeatureSet = result["features"]
-                hr = result["husi"]
-                kr = result["kusi"]
+                hr = result["hssi"]
+                kr = result["kssi"]
                 # fragility_ip_cap MUST be included here so the ML training
                 # sample reflects the same IP that HUSI/KUSI actually used.
                 # Without it, the ML learns the wrong hits<->IP mapping for
@@ -959,7 +1001,8 @@ async def _persist_results(
                     "ens_park": f.ens_park,
                     "ens_temp": f.ens_temp,
                     "ens_air": f.ens_air,
-                    "husi": hr["husi"], "kusi": kr["kusi"],
+                    "hssi": hr["hssi"], "husi": hr["hssi"],
+                    "kssi": kr["kssi"], "kusi": kr["kssi"],
                     "projected_hits": hr.get("projected_hits"),
                     "projected_ks": kr.get("projected_ks"),
                     # Hidden variables for ML residual drift analysis
@@ -971,8 +1014,10 @@ async def _persist_results(
                 }
                 ml_samples.append(sample)
                 formula_outputs_by_pitcher[f.pitcher_id] = {
-                    "husi": hr["husi"], "kusi": kr["kusi"],
-                    "husi_grade": hr["grade"], "kusi_grade": kr["grade"],
+                    "hssi": hr["hssi"], "husi": hr["hssi"],
+                    "kssi": kr["kssi"], "kusi": kr["kssi"],
+                    "hssi_grade": hr["grade"], "husi_grade": hr["grade"],
+                    "kssi_grade": kr["grade"], "kusi_grade": kr["grade"],
                     "projected_hits": hr.get("projected_hits"),
                     "projected_ks": kr.get("projected_ks"),
                 }

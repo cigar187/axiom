@@ -40,8 +40,11 @@ log = get_logger("ml_backfill")
 
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 
-# 2026 Opening Day — adjust if season starts differ
-SEASON_START_2026 = date(2026, 3, 27)
+# Opening Day and regular season end date per season
+SEASON_DATES: dict[str, tuple[date, date]] = {
+    "2025": (date(2025, 3, 27), date(2025, 9, 28)),
+    "2026": (date(2026, 3, 27), date.today()),
+}
 
 # Concurrency limit — be respectful to the free MLB API
 SEMAPHORE_LIMIT = 6
@@ -58,17 +61,18 @@ async def run_backfill(
 
     Args:
         session:    Open DB session.
-        season:     MLB season year (e.g. "2026").
-        start_date: First date to backfill. Defaults to Opening Day.
-        end_date:   Last date to backfill. Defaults to yesterday.
+        season:     MLB season year (e.g. "2025" or "2026").
+        start_date: First date to backfill. Defaults to season Opening Day.
+        end_date:   Last date to backfill. Defaults to season end or today.
 
     Returns:
         {"loaded": int, "skipped": int, "errors": int}
     """
+    default_start, default_end = SEASON_DATES.get(season, (date(int(season), 3, 27), date.today()))
     if start_date is None:
-        start_date = SEASON_START_2026
+        start_date = default_start
     if end_date is None:
-        end_date = date.today()
+        end_date = default_end
 
     log.info("ML backfill starting",
              season=season,
@@ -151,6 +155,7 @@ async def run_backfill(
                             game_id=sample.get("game_id"),
                             error=str(row_err))
                 errors += 1
+                await session.rollback()
 
         await session.commit()
         log.info("ML backfill complete",
@@ -476,6 +481,10 @@ def _safe_float(val) -> Optional[float]:
 async def _main() -> None:
     from dotenv import load_dotenv
     load_dotenv()
+    os.environ.setdefault(
+        "DATABASE_URL",
+        "postgresql+asyncpg://axiom_user:AxiomGTMVelo2026!@127.0.0.1:5433/axiom_db",
+    )
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
         print("ERROR: DATABASE_URL not set in environment.")
@@ -485,13 +494,18 @@ async def _main() -> None:
     SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
     async with SessionLocal() as session:
-        result = await run_backfill(session, season="2026")
+        result = await run_backfill(
+            session,
+            season="2025",
+            start_date=date(2025, 3, 27),
+            end_date=date(2025, 9, 28),
+        )
         print(f"\n✓ Backfill complete:")
         print(f"  Samples loaded:  {result['loaded']}")
         print(f"  Skipped:         {result['skipped']}")
         print(f"  Errors:          {result['errors']}")
         print(f"\n  The ML engine now has {result['loaded']} labeled training samples")
-        print(f"  from the beginning of the 2026 season.")
+        print(f"  from the 2025 regular season.")
         print(f"\n  Run the daily pipeline to start generating ML predictions.")
 
 

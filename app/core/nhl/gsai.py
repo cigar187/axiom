@@ -1,10 +1,10 @@
 """
-GSAUI — Goalie Shots-Against Under Index
+GSAI — Goalie Shots-Against Index
 Scoring engine for NHL goalie shots-on-goal under props.
 
 Formula (mirrors HUSI block architecture):
 
-  GSAUI_base = 0.27*OSQ + 0.26*GSS + 0.16*GEN + 0.18*TOP + 0.08*RFS + 0.05*TSC
+  GSAI_base = 0.29*GSS + 0.24*OSQ + 0.18*TOP + 0.16*GEN + 0.08*RFS + 0.05*TSC
 
   OSQ (Opponent Shooting Quality):
     0.20*shots_pg + 0.18*shooting_pct + 0.18*pp_pct + 0.16*high_danger_rate
@@ -41,14 +41,21 @@ Volatility penalties (capped at 8.0):
   GV3: goalie facing B2B (own team)    → -2.0
   GV4: high-danger shot rate vs goalie → -1.5
   GV5: referee crew known high-PP      → -1.0
+  GV6: Game 7 elimination game         → -1.5
+  GV7: GSS data missing                → -2.0
 
-Final: GSAUI = clamp(GSAUI_base + interaction - volatility, 0, 100)
-Projected shots: projected_shots = base_shots * (1 - 0.18 * ((GSAUI - 50) / 50))
+Final: GSAI = clamp(GSAI_base + interaction - volatility, 0, 100)
+Projected shots: projected_shots = base_shots * (1 - 0.22 * ((GSAI - 50) / 50))
+Capped: 15–50 shots.
 """
+
+import logging
 
 from app.core.nhl.features import NHLGoalieFeatureSet
 
 NEUTRAL = 50.0
+
+logger = logging.getLogger(__name__)
 
 
 def _f(val, fallback: float = NEUTRAL) -> float:
@@ -159,7 +166,7 @@ def score_tsc(f: NHLGoalieFeatureSet) -> float:
 # Interaction boosts
 # ─────────────────────────────────────────────────────────────
 
-def compute_gsaui_interaction(
+def compute_gsai_interaction(
     osq: float, gss: float, gen: float, top: float,
     rfs: float, tsc: float,
     b2b_both: bool = False,
@@ -187,14 +194,14 @@ def compute_gsaui_interaction(
     if b2b_both:
         boost += 1.0
 
-    return min(boost, 8.0)
+    return max(-8.0, min(8.0, boost))
 
 
 # ─────────────────────────────────────────────────────────────
 # Volatility penalties
 # ─────────────────────────────────────────────────────────────
 
-def compute_gsaui_volatility(
+def compute_gsai_volatility(
     f: NHLGoalieFeatureSet,
     gss: float,
     gen: float,
@@ -225,36 +232,48 @@ def compute_gsaui_volatility(
     if rfs < 40:
         penalty += 1.0
 
+    # GV6: Game 7 elimination game — both teams play more defensively but
+    # unpredictably; maximum series volatility regardless of shot model
+    series_game = f.gen_series_game
+    if series_game is not None and series_game >= 7:
+        penalty += 1.5
+        logger.info("GV6 triggered — Game 7 elimination game")
+
+    # GV7: GSS data unavailable — never treat a goalie with no data as neutral
+    if not f.gss_data_available:
+        penalty += 2.0
+        logger.info("GV7 triggered — GSS data missing, applying volatility penalty")
+
     return min(penalty, 8.0)
 
 
 # ─────────────────────────────────────────────────────────────
-# Main GSAUI compute function
+# Main GSAI compute function
 # ─────────────────────────────────────────────────────────────
 
 def _clamp(v: float) -> float:
     return max(0.0, min(100.0, v))
 
 
-def gsaui_grade(score: float) -> str:
-    if score >= 72: return "A"
-    if score >= 62: return "B"
-    if score >= 50: return "C"
-    if score >= 38: return "D"
-    return "F"
+def gsai_grade(score: float) -> str:
+    if score >= 65: return "A+"
+    if score >= 58: return "A"
+    if score >= 52: return "B"
+    if score >= 46: return "C"
+    return "D"
 
 
-def compute_gsaui(
+def compute_gsai(
     f: NHLGoalieFeatureSet,
     b2b_both: bool = False,
     silent: bool = False,
 ) -> dict:
     """
-    Compute GSAUI for a goalie and return a results dict.
+    Compute GSAI for a goalie and return a results dict.
 
     Returns:
         {
-            "gsaui": float (0-100),
+            "gsai": float (0-100),
             "grade": str,
             "projected_shots": float,
             "blocks": { OSQ, GSS, GEN, TOP, RFS, TSC },
@@ -269,33 +288,34 @@ def compute_gsaui(
     rfs = score_rfs(f)
     tsc = score_tsc(f)
 
-    gsaui_base = (
-        0.27 * osq +
-        0.26 * gss +
-        0.16 * gen +
+    gsai_base = (
+        0.29 * gss +
+        0.24 * osq +
         0.18 * top +
+        0.16 * gen +
         0.08 * rfs +
         0.05 * tsc
     )
 
-    interaction = compute_gsaui_interaction(
+    interaction = compute_gsai_interaction(
         osq=osq, gss=gss, gen=gen, top=top, rfs=rfs, tsc=tsc,
         b2b_both=b2b_both,
         opp_pp_rate_raw=_f(f.top_opponent_pp_rate),
     )
 
-    volatility = compute_gsaui_volatility(f, gss=gss, gen=gen, rfs=rfs)
+    volatility = compute_gsai_volatility(f, gss=gss, gen=gen, rfs=rfs)
 
-    gsaui_raw = gsaui_base + interaction - volatility
-    gsaui = _clamp(gsaui_raw)
-    grade = gsaui_grade(gsaui)
+    gsai_raw = gsai_base + interaction - volatility
+    gsai = _clamp(gsai_raw)
+    grade = gsai_grade(gsai)
 
-    # Projected shots — sensitivity 0.18 (calibrated for hockey variance)
+    # Projected shots — sensitivity 0.22, capped 15–50
     base = f.avg_shots_faced_per_game
-    projected_shots = round(base * (1.0 - 0.18 * ((gsaui - 50.0) / 50.0)), 1)
+    projected_shots = base * (1.0 - 0.22 * ((gsai - 50.0) / 50.0))
+    projected_shots = round(max(15.0, min(50.0, projected_shots)), 1)
 
     return {
-        "gsaui": round(gsaui, 1),
+        "gsai": round(gsai, 1),
         "grade": grade,
         "projected_shots": projected_shots,
         "base_shots": round(base, 1),
@@ -309,5 +329,5 @@ def compute_gsaui(
         },
         "interaction": round(interaction, 2),
         "volatility": round(volatility, 2),
-        "gsaui_base": round(gsaui_base, 2),
+        "gsai_base": round(gsai_base, 2),
     }

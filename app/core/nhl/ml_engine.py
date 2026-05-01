@@ -32,10 +32,14 @@ Standalone: this engine reads ONLY from the NHL public API and sklearn.
 It does NOT touch the production database or the baseball pipeline.
 """
 
+import logging
+
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+
+logger = logging.getLogger(__name__)
 
 # ── Minimum games needed before ML activates for a player
 MIN_SAMPLES = 20
@@ -222,11 +226,19 @@ class NHLPlayerMLEngine:
         self.is_trained = True
         return True
 
-    def predict(self, game_log: list[dict], is_home: bool) -> dict | None:
+    def predict(
+        self,
+        game_log: list[dict],
+        is_home: bool,
+        is_playoff: bool = False,
+    ) -> dict | None:
         """
         Predict tonight's stats using end-of-season rolling form.
         game_log should be the full regular season log (chronological).
         is_home: whether this player's team is home tonight.
+        is_playoff: when True, applies a 12% discount to all projections.
+          Regular season training data systematically over-projects playoff
+          output — playoff hockey is slower, more defensive, and lower scoring.
         """
         if not self.is_trained:
             return None
@@ -238,14 +250,36 @@ class NHLPlayerMLEngine:
         )
         x = np.array(fv).reshape(1, -1)
 
-        result = {}
-        for target in TARGETS:
-            raw = float(self.models[target].predict(x)[0])
-            result[f"ml_proj_{target}"] = max(0.0, raw)
+        pts_pred     = max(0.0, float(self.models["points"].predict(x)[0]))
+        sog_pred     = max(0.0, float(self.models["shots"].predict(x)[0]))
+        goals_pred   = max(0.0, float(self.models["goals"].predict(x)[0]))
+        assists_pred = max(0.0, float(self.models["assists"].predict(x)[0]))
 
-        result["n_samples"]  = self.n_samples
-        result["ml_active"]  = True
-        return result
+        if is_playoff:
+            discount = 0.88  # 12% playoff discount
+            pts_pred     *= discount
+            sog_pred     *= discount
+            goals_pred   *= discount
+            assists_pred *= discount
+            logger.info(
+                "Playoff discount applied — 12%% reduction to all ML projections for %s",
+                self.player_name,
+            )
+
+        pts_pred     = round(max(0.0, min(5.0,  pts_pred)),  2)
+        sog_pred     = round(max(0.0, min(12.0, sog_pred)),  1)
+        goals_pred   = round(max(0.0, min(3.0,  goals_pred)), 2)
+        assists_pred = round(max(0.0, min(4.0,  assists_pred)), 2)
+
+        return {
+            "ml_proj_points":  pts_pred,
+            "ml_proj_shots":   sog_pred,
+            "ml_proj_goals":   goals_pred,
+            "ml_proj_assists": assists_pred,
+            "n_samples":       self.n_samples,
+            "ml_active":       True,
+            "playoff_discount_applied": is_playoff,
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

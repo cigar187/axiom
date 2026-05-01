@@ -1,8 +1,8 @@
 """
-NHL scoring engines — GSAUI and PPUI.
+NHL scoring engines — GSAI and PPSI.
 
-GSAUI: Goalie Shots-Against Under Index (mirrors HUSI block architecture)
-PPUI:  Player Points Under Index       (mirrors KUSI block architecture)
+GSAI: Goalie Shots-Against Index (mirrors HUSI block architecture)
+PPSI:  Player Points Scoring Index       (mirrors KUSI block architecture)
 
 These engines are completely standalone from the baseball pipeline.
 They read from NHLGoalieFeatureSet / NHLSkaterFeatureSet and produce

@@ -195,3 +195,136 @@ class RundownAdapter(BaseProvider):
             if line.get("line") is not None:
                 return line
         return None
+
+    async def fetch_game_lines(self, target_date: date) -> dict:
+        """
+        Fetch pre-game total and moneyline odds for each MLB game on target_date.
+
+        Calls GET /sports/3/events/{date} and parses:
+          - market_id=3 (totals)    → game_total (the main-line over/under value)
+          - market_id=1 (moneyline) → home_moneyline and away_moneyline (American odds)
+
+        Returns:
+        {
+          "<rundown_event_id>": {
+            "game_total":       float | None,   # e.g. 8.5
+            "home_moneyline":   int   | None,   # e.g. -140
+            "away_moneyline":   int   | None,   # e.g. +120
+            "home_team_name":   str,
+            "away_team_name":   str,
+          }
+        }
+        Returns empty dict on any failure — non-blocking.
+        """
+        date_str = target_date.strftime("%Y-%m-%d")
+        log.info("Rundown game lines fetch starting", date=date_str)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                raw = await self._get(
+                    client,
+                    f"/sports/{MLB_SPORT_ID}/events/{date_str}",
+                    params={"include": "scores,all_periods,lines"},
+                )
+        except Exception as exc:
+            log.error("Rundown game lines fetch failed", date=date_str, error=str(exc))
+            return {}
+
+        game_lines: dict[str, dict] = {}
+
+        for event in raw.get("events", []):
+            event_id = event.get("event_id", "")
+            if not event_id:
+                continue
+
+            # Identify home and away team names from the teams list
+            home_team_name = ""
+            away_team_name = ""
+            for team in event.get("teams", []):
+                full_name = f"{team.get('name', '')} {team.get('mascot', '')}".strip()
+                if team.get("is_home"):
+                    home_team_name = full_name
+                elif team.get("is_away"):
+                    away_team_name = full_name
+
+            game_total: Optional[float] = None
+            home_moneyline: Optional[int] = None
+            away_moneyline: Optional[int] = None
+
+            for market in event.get("markets", []):
+                market_id = market.get("market_id")
+
+                # ── Game total (market_id=3, pre-game period_id=0)
+                if market_id == 3 and market.get("period_id") == 0:
+                    for participant in market.get("participants", []):
+                        if participant.get("name", "").lower() != "over":
+                            continue
+                        for line in participant.get("lines", []):
+                            for _book_id, price in line.get("prices", {}).items():
+                                if price.get("is_main_line"):
+                                    try:
+                                        game_total = float(line.get("value", 0))
+                                    except (TypeError, ValueError):
+                                        pass
+                                    break
+                            if game_total is not None:
+                                break
+                        if game_total is not None:
+                            break
+
+                # ── Moneyline (market_id=1, pre-game period_id=0)
+                elif market_id == 1 and market.get("period_id") == 0:
+                    participants = market.get("participants", [])
+                    for participant in participants:
+                        p_name = participant.get("name", "")
+                        for line in participant.get("lines", []):
+                            for _book_id, price in line.get("prices", {}).items():
+                                if price.get("is_main_line"):
+                                    try:
+                                        ml_val = int(price.get("price", 0))
+                                    except (TypeError, ValueError):
+                                        ml_val = None
+                                    if ml_val is not None:
+                                        if home_team_name and p_name == home_team_name:
+                                            home_moneyline = ml_val
+                                        elif away_team_name and p_name == away_team_name:
+                                            away_moneyline = ml_val
+                                    break
+
+                    # Positional fallback — if name matching found nothing,
+                    # treat participant[0] as away and participant[1] as home.
+                    # The Rundown returns away team first in the participants list.
+                    if home_moneyline is None and away_moneyline is None and len(participants) >= 2:
+                        for idx, participant in enumerate(participants[:2]):
+                            for line in participant.get("lines", []):
+                                for _book_id, price in line.get("prices", {}).items():
+                                    if price.get("is_main_line"):
+                                        try:
+                                            ml_val = int(price.get("price", 0))
+                                        except (TypeError, ValueError):
+                                            ml_val = None
+                                        if ml_val is not None:
+                                            if idx == 0:
+                                                away_moneyline = ml_val
+                                            else:
+                                                home_moneyline = ml_val
+                                        break
+
+            game_lines[event_id] = {
+                "game_total":     game_total,
+                "home_moneyline": home_moneyline,
+                "away_moneyline": away_moneyline,
+                "home_team_name": home_team_name,
+                "away_team_name": away_team_name,
+            }
+            log.debug("Game lines parsed",
+                      event_id=event_id,
+                      home=home_team_name,
+                      away=away_team_name,
+                      total=game_total,
+                      home_ml=home_moneyline,
+                      away_ml=away_moneyline)
+
+        log.info("Rundown game lines fetch complete",
+                 date=date_str, games_parsed=len(game_lines))
+        return game_lines

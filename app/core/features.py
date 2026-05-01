@@ -47,7 +47,7 @@ class PitcherFeatureSet:
     season_k_per_9: Optional[float] = None       # raw K/9 stat (unadjusted)
     season_games_started: int = 0                # starts this season — used for Bayesian shrinkage
 
-    # ── Bayesian-shrunk rates (used by HUSI/KUSI for base_hits / base_ks)
+    # ── Bayesian-shrunk rates (used by HSSI/KSSI for base_hits / base_ks)
     # Small-sample season rates are pulled toward league average (H/9=8.5, K/9=8.3).
     # A pitcher with 3 starts and H/9=3.0 gets a blended rate of ~6.8, not 3.0.
     # As the sample grows the blend fades — at 25+ starts it barely moves the rate.
@@ -59,7 +59,7 @@ class PitcherFeatureSet:
     mlb_service_years: Optional[int] = None      # years in MLB — used as tier fallback when avg_ip unavailable
 
     # ────────────────────────────────────────────────────────────────────
-    # HUSI feature scores (0-100 each, 50 = neutral)
+    # HSSI feature scores (0-100 each, 50 = neutral)
     # ────────────────────────────────────────────────────────────────────
 
     # OWC — Opponent Weaknesses vs Contact
@@ -91,7 +91,7 @@ class PitcherFeatureSet:
     ens_inf: Optional[float] = None     # infield surface type
 
     # Park Factor Direct Override
-    # Applied as a multiplier on projected_hits AFTER the HUSI formula.
+    # Applied as a multiplier on projected_hits AFTER the HSSI formula.
     # Extreme hitter parks (Coors = 1.18+) cannot be captured fully through ENS block weighting alone.
     park_hits_multiplier: Optional[float] = None  # e.g. 1.18 for Coors, 0.90 for Petco
     park_extreme: bool = False                     # True when park_score < 40 (triggers HV9 penalty — Coors, Chase, GABP, etc.)
@@ -120,7 +120,7 @@ class PitcherFeatureSet:
     dsc_align: Optional[float] = None   # defensive alignment score
 
     # ────────────────────────────────────────────────────────────────────
-    # KUSI feature scores (0-100 each, 50 = neutral)
+    # KSSI feature scores (0-100 each, 50 = neutral)
     # ────────────────────────────────────────────────────────────────────
 
     # OCR — Opponent Contact Rate
@@ -176,8 +176,8 @@ class PitcherFeatureSet:
     relies_on_one_putaway: bool = False            # used in K2 interaction
 
     # ── Raw season stats used for direct suppressor calculations (not normalized)
-    season_gb_pct: Optional[float] = None         # raw GB% (e.g. 52.3) — drives GB suppressor multiplier in husi.py
-    season_swstr_pct: Optional[float] = None      # swinging strike rate % — direct KUSI input, feeds per_putw (Sarris)
+    season_gb_pct: Optional[float] = None         # raw GB% (e.g. 52.3) — drives GB suppressor multiplier in hssi.py
+    season_swstr_pct: Optional[float] = None      # swinging strike rate % — direct KSSI input, feeds per_putw (Sarris)
     season_hard_hit_pct: Optional[float] = None   # hard-hit rate % allowed — replaces ERA tier in HV10 (Tango/SABR)
     hard_hit_tier: str = "NORMAL"                 # ELITE (<28%) / NORMAL (28-35%) / STRUGGLING (35-40%) / DISASTER (>40%)
 
@@ -193,8 +193,8 @@ class PitcherFeatureSet:
     # ── Bullpen Fatigue Coefficient (β_bp)
     # BFS (Bullpen Fatigue Score) = (avg_weighted_pitches_per_leverage_arm - 15) / 100
     # Clamped to [-0.20, 0.50]. 0.0 = neutral/fresh.
-    bullpen_fatigue_opp: float = 0.0      # opponent's bullpen fatigue → feeds HUSI adjustment
-    bullpen_fatigue_own: float = 0.0      # own team's bullpen fatigue → feeds KUSI adjustment
+    bullpen_fatigue_opp: float = 0.0      # opponent's bullpen fatigue → feeds HSSI adjustment
+    bullpen_fatigue_own: float = 0.0      # own team's bullpen fatigue → feeds KSSI adjustment
     bullpen_red_alert_opp: bool = False   # opponent closer threw back-to-back days
     bullpen_red_alert_own: bool = False   # own closer threw back-to-back days
     bullpen_label_opp: str = "NO DATA"   # human-readable: FRESH/NORMAL/TIRED/GASSED/RED ALERT
@@ -226,19 +226,20 @@ class PitcherFeatureSet:
     # ── SKU #37 — Catcher Framing Module
     # The defending catcher can "steal" borderline strikes through elite framing,
     # effectively giving the pitcher free Ks the formula would not otherwise count.
-    # Strike rate > 50% triggers a +4% KUSI multiplier.
-    # Strike rate < 48% triggers a -2% KUSI penalty.
+    # Strike rate > 50% triggers a +4% KSSI multiplier.
+    # Strike rate < 48% triggers a -2% KSSI penalty.
     catcher_id: Optional[str] = None           # MLB player ID of the catcher
     catcher_name: Optional[str] = None         # catcher display name
     catcher_framing_score: float = 50.0        # 0-100 framing score (feeds dsc_catch block)
     catcher_strike_rate: float = 50.0          # raw Statcast called-strike rate (%)
-    catcher_kusi_adj: float = 0.0              # signed KUSI multiplier (+0.04 / 0.0 / -0.02)
+    catcher_kssi_adj: float = 0.0              # signed KSSI multiplier (+0.04 / 0.0 / -0.02)
+    catcher_kusi_adj: float = 0.0              # backward-compat alias — reads from catcher_kssi_adj
     catcher_framing_label: str = "NEUTRAL"     # ELITE / ABOVE_AVG / AVG / BELOW_AVG / POOR
 
     # ── SKU #14 — Travel & Fatigue Index (TFI)
     # Measures rest deficit and timezone disruption for the PITCHING TEAM.
     # If rest < 16 hours (getaway day) OR timezone shift >= 2 hours,
-    # a -7% Reaction Penalty is applied to HUSI (#27).
+    # a -7% Reaction Penalty is applied to HSSI (#27).
     tfi_rest_hours: float = 24.0               # hours between last game's end and today's first pitch
     tfi_tz_shift: int = 0                      # absolute timezone delta from yesterday's venue
     tfi_getaway_day: bool = False              # True when rest_hours < 16
@@ -251,8 +252,8 @@ class PitcherFeatureSet:
     # Extension: how far in front of the rubber the pitcher releases (feet).
     # Both are calculated from the MLB Stats API live game feed.
     #
-    # Extension boost: > 6.8 ft → +1.5 mph perceived velocity → boosts per_velo in KUSI
-    # VAA flat penalty: > -4.5° (flat trajectory) → easier to track → +10% contact in HUSI
+    # Extension boost: > 6.8 ft → +1.5 mph perceived velocity → boosts per_velo in KSSI
+    # VAA flat penalty: > -4.5° (flat trajectory) → easier to track → +10% contact in HSSI
     # VAA Elevation override (Merlin): if VAA > -4.5 AND pitch_location_high_pct > 60%
     #   → flat pitch thrown high produces pop-ups, NOT line drives → REVERSE to a suppression BOOST.
     #
@@ -316,15 +317,15 @@ class PitcherFeatureSet:
     #   90 = strong advantage (avg 10° mismatch — physics heavily favors the pitcher)
     #
     # Wired to:
-    #   HUSI pcs_soft (PCS block, weight 0.16) — soft contact rate proxy
-    #   KUSI K9 interaction boost when collision > 70 AND VAA < -5.0°
+    #   HSSI pcs_soft (PCS block, weight 0.16) — soft contact rate proxy
+    #   KSSI K9 interaction boost when collision > 70 AND VAA < -5.0°
     #
     # None when VAA is unavailable (pre-game without live feed) or lineup not confirmed.
     swing_plane_collision_score: Optional[float] = None
 
     # ── Fragility Index (FI) + TBAPI modifiers
     # Computed from the pitcher's last 3 starts by fragility.py.
-    # Applied as post-formula multipliers in husi.py and kusi.py —
+    # Applied as post-formula multipliers in hssi.py and kssi.py —
     # same layer as the GB Suppressor and Park Factor Override.
     # Safe defaults mean no adjustment fires when recent start data is unavailable.
     fi_score:        float         = 0.0    # raw fragility score (0-100)
@@ -336,3 +337,10 @@ class PitcherFeatureSet:
     tbapi_tier:      str           = "NORMAL" # NORMAL / ELEVATED / HIGH / EXTREME
     tbapi_hits_mult: float         = 1.0    # hits multiplier from TBAPI
     tbapi_uses_bb:   bool          = False  # True when walk data was available for TBAPI
+
+    # ── Market lines (from The Rundown via game_info)
+    # Used by the GTS modifier in hssi.py and kssi.py.
+    # None when The Rundown API did not return data for this game.
+    game_total:      Optional[float] = None  # pre-game over/under line (e.g. 8.5)
+    home_moneyline:  Optional[int]   = None  # home team odds in American format (e.g. -140)
+    away_moneyline:  Optional[int]   = None  # away team odds in American format (e.g. +120)

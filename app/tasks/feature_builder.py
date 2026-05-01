@@ -2,7 +2,7 @@
 Feature builder — maps raw data from all providers into PitcherFeatureSet objects.
 
 This is the ONLY place where provider data is translated into scoring engine inputs.
-The scoring engine (husi.py / kusi.py) never touches raw API data directly.
+The scoring engine (hssi.py / kssi.py) never touches raw API data directly.
 
 Normalization of all season stats to 0-100 scores happens here using the
 normalization utility (zscore method across all pitchers fetched today).
@@ -205,7 +205,7 @@ def build_features(
             f.hard_hit_tier = "NORMAL"
     # else: defaults to NORMAL — no penalty, no boost, neutral
 
-    # ── Raw GB% — stored for direct multiplier in husi.py (not normalized)
+    # ── Raw GB% — stored for direct multiplier in hssi.py (not normalized)
     gb_pct = pitcher_data.get("season_gb_pct")
     if gb_pct is not None:
         f.season_gb_pct = float(gb_pct)
@@ -235,7 +235,7 @@ def build_features(
     # Use season_go_ao (GO/AO ratio from MLB Stats API) for z-score normalization.
     # This is ALWAYS on the same scale (0.5-2.5) regardless of whether Statcast data
     # is available — avoids mixing GO/AO ratios with Statcast GB percentages in the
-    # population list. season_gb_pct is used separately for the husi.py direct suppressor.
+    # population list. season_gb_pct is used separately for the hssi.py direct suppressor.
     all_go_ao = [p.get("season_go_ao") for p in all_pitchers_data.values() if p.get("season_go_ao")]
     # Hard-hit rate population — used to differentiate pcs_bara from pcs_hha (no double-counting)
     all_hhr = [p.get("season_hard_hit_pct") for p in all_pitchers_data.values() if p.get("season_hard_hit_pct")]
@@ -430,7 +430,7 @@ def build_features(
     f.ens_park = park_score
 
     # ── Park Factor Direct Override (SKU #27 calibration)
-    # The ENS block only captures ~5.6% of the HUSI signal from park factors,
+    # The ENS block only captures ~5.6% of the HSSI signal from park factors,
     # which is far too weak for extreme venues like Coors Field (+18% hits IRL).
     # This direct multiplier is applied to projected_hits in husi.py.
     # Formula: park_hits_multiplier = 1.0 + ((50 - park_score) / 50) * 0.30
@@ -444,6 +444,15 @@ def build_features(
              park_score=park_score,
              park_hits_multiplier=f.park_hits_multiplier,
              park_extreme=f.park_extreme)
+
+    # ── Market lines (GTS modifier inputs)
+    f.game_total = game_info.get("game_total")
+    if pitcher_team_id == home_team_id:
+        f.home_moneyline = game_info.get("home_moneyline")
+        f.away_moneyline = game_info.get("away_moneyline")
+    else:
+        f.home_moneyline = game_info.get("away_moneyline")
+        f.away_moneyline = game_info.get("home_moneyline")
 
     # Wind direction score: "in from center/left/right" helps pitcher; "out" hurts
     wind = (game_info.get("wind_direction") or "").lower()
@@ -939,8 +948,8 @@ def build_features(
     f.pitcher_median_ks = f.blended_k_per_9 * (_exp_ip / 9.0)
 
     # ── Bullpen Fatigue Coefficient (β_bp)
-    # Own team fatigue affects KUSI (tired bullpen = less K protection for starter)
-    # Opponent fatigue affects HUSI (tired opponent bullpen = more hit opportunities)
+    # Own team fatigue affects KSSI (tired bullpen = less K protection for starter)
+    # Opponent fatigue affects HSSI (tired opponent bullpen = more hit opportunities)
     if bullpen_own:
         f.bullpen_fatigue_own = bullpen_own.get("bfs", 0.0)
         f.bullpen_red_alert_own = bullpen_own.get("red_alert", False)
@@ -1001,7 +1010,7 @@ def build_features(
 
     # ── Fragility Index + TBAPI modifiers
     # Uses the same recent_form data as PFF — no additional API calls needed.
-    # Results are stored as post-formula multipliers; HUSI/KUSI read them from f.
+    # Results are stored as post-formula multipliers; HSSI/KSSI read them from f.
     from app.utils.fragility import compute_fragility
     frag = compute_fragility(recent_form)
     f.fi_score        = frag["fi_score"]
@@ -1020,7 +1029,7 @@ def build_features(
     f.ops_trend = clamp(round(50.0 + f.pff_score * 100.0, 2))
 
     # ── SKU #37 — Catcher Framing
-    # The defending catcher's framing ability modifies KUSI. An elite framer
+    # The defending catcher's framing ability modifies KSSI. An elite framer
     # "steals" borderline strikes, giving the pitcher extra Ks on called strikes.
     cf = catcher_framing or {}
     if cf:
@@ -1028,7 +1037,8 @@ def build_features(
         f.catcher_id             = cf.get("catcher_id")
         f.catcher_name           = cf.get("catcher_name")
         f.catcher_strike_rate    = cf.get("strike_rate", 50.0)
-        f.catcher_kusi_adj       = cf.get("kusi_adjustment", 0.0)
+        f.catcher_kssi_adj       = cf.get("kssi_adjustment", 0.0)
+        f.catcher_kusi_adj       = f.catcher_kssi_adj
         f.catcher_framing_label  = cf.get("framing_label", "NEUTRAL")
         # Also feed the DSC block's catch sub-score
         f.catcher_framing_score  = compute_framing_score(f.catcher_id)
@@ -1037,7 +1047,7 @@ def build_features(
                  pitcher=name,
                  catcher=f.catcher_name,
                  strike_rate=f.catcher_strike_rate,
-                 kusi_adj=f.catcher_kusi_adj,
+                 kssi_adj=f.catcher_kssi_adj,
                  dsc_catch=f.dsc_catch)
 
     # ── SKU #14 — Travel & Fatigue Index
@@ -1128,8 +1138,8 @@ def build_features(
     # inefficient — producing soft contact, pop-ups, or foul tips instead of barrels.
     #
     # Drives:
-    #   f.pcs_soft            → HUSI PCS block (soft contact proxy, weight 0.16)
-    #   f.swing_plane_collision_score → raw value used by KUSI K9 interaction rule
+    #   f.pcs_soft            → HSSI PCS block (soft contact proxy, weight 0.16)
+    #   f.swing_plane_collision_score → raw value used by KSSI K9 interaction rule
     sp = swing_profiles or {}
     if sp and f.vaa_degrees is not None and opp_batters:
         ideal_aa = abs(f.vaa_degrees) + 5.0
@@ -1148,7 +1158,7 @@ def build_features(
             # +10° avg mismatch → score ≈ 90 (strong advantage)
             collision_score = round(clamp(50.0 + avg_mismatch * 4.0), 2)
             f.swing_plane_collision_score = collision_score
-            f.pcs_soft = collision_score  # soft contact proxy — drives HUSI PCS block
+            f.pcs_soft = collision_score  # soft contact proxy — drives HSSI PCS block
             log.info("SKU #39 Swing Plane Collision",
                      pitcher=name,
                      vaa=f.vaa_degrees,

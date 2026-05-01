@@ -1,10 +1,10 @@
 """
-PPUI — Player Points Under Index
+PPSI — Player Points Scoring Index
 Scoring engine for NHL player points (goals + assists) under props.
 
 Formula (mirrors KUSI block architecture):
 
-  PPUI_base = 0.28*OSR + 0.22*PMR + 0.18*PER + 0.14*POP + 0.10*RPS + 0.08*TLD
+  PPSI_base = 0.28*OSR + 0.22*PMR + 0.18*PER + 0.14*POP + 0.10*RPS + 0.08*TLD
 
   OSR (Opponent Scoring Resistance):
     0.22*goals_against_pg + 0.20*sv_pct_against + 0.18*shots_against_pg
@@ -34,18 +34,27 @@ Interaction boosts (capped at 7.0):
   P4: OSR < 35 and PMR < 40          → -1.5  (stingy opponent + hot goalie)
 
 Volatility penalties (capped at 7.0):
-  PV1: key linemate injured           → -2.5
-  PV2: player on B2B fatigue          → -1.5
+  PV1: key linemate injured            → -2.5
+  PV2: player on B2B fatigue           → -1.5
   PV3: opponent hot goalie (high GSAx) → -2.0
-  PV4: player in scoring slump        → -1.0
+  PV4: player in scoring slump         → -1.0
+  PV5: Game 7 elimination game         → -1.0
 
-Final: PPUI = clamp(PPUI_base + interaction - volatility, 0, 100)
-Projected points: projected_pts = base_pts * (1 - 0.22 * ((PPUI - 50) / 50))
+Final: PPSI = clamp(PPSI_base + interaction - volatility, 0, 100)
+Projections:
+  projected_pts     = base_pts * (1 - 0.22 * ((PPSI - 50) / 50))   cap 0–5
+  projected_sog     = base_sog * (1 - 0.12 * ((PPSI - 50) / 50))   cap 0–12
+  projected_goals   = projected_sog * player_shooting_pct            cap 0–3
+  projected_assists = max(0, projected_pts - projected_goals)        cap 0–4
 """
+
+import logging
 
 from app.core.nhl.features import NHLSkaterFeatureSet
 
 NEUTRAL = 50.0
+
+logger = logging.getLogger(__name__)
 
 
 def _f(val, fallback: float = NEUTRAL) -> float:
@@ -152,7 +161,7 @@ def score_tld(f: NHLSkaterFeatureSet) -> float:
 # Interaction boosts
 # ─────────────────────────────────────────────────────────────
 
-def compute_ppui_interaction(
+def compute_ppsi_interaction(
     osr: float, pmr: float, per: float,
     pop: float, rps: float, tld: float,
     pp1_status: float = NEUTRAL,
@@ -175,14 +184,14 @@ def compute_ppui_interaction(
     if osr < 35 and pmr < 40:
         boost -= 1.5
 
-    return min(boost, 7.0)
+    return max(-7.0, min(7.0, boost))
 
 
 # ─────────────────────────────────────────────────────────────
 # Volatility penalties
 # ─────────────────────────────────────────────────────────────
 
-def compute_ppui_volatility(f: NHLSkaterFeatureSet, pmr: float) -> float:
+def compute_ppsi_volatility(f: NHLSkaterFeatureSet, pmr: float) -> float:
     penalty = 0.0
 
     # PV1: Key linemate injured
@@ -206,34 +215,43 @@ def compute_ppui_volatility(f: NHLSkaterFeatureSet, pmr: float) -> float:
     if per_pts < 38:
         penalty += 1.0
 
+    # PV5: Game 7 elimination game — tighter defensive play reduces individual
+    # scoring floors regardless of matchup quality
+    if f.ctx and f.ctx.series_game_number >= 7:
+        penalty += 1.0
+        logger.info("PV5 triggered — Game 7 elimination game, tighter defensive play")
+
     return min(penalty, 7.0)
 
 
 # ─────────────────────────────────────────────────────────────
-# Main PPUI compute function
+# Main PPSI compute function
 # ─────────────────────────────────────────────────────────────
 
 def _clamp(v: float) -> float:
     return max(0.0, min(100.0, v))
 
 
-def ppui_grade(score: float) -> str:
-    if score >= 72: return "A"
-    if score >= 62: return "B"
-    if score >= 50: return "C"
-    if score >= 38: return "D"
-    return "F"
+def ppsi_grade(score: float) -> str:
+    if score >= 63: return "A+"
+    if score >= 56: return "A"
+    if score >= 50: return "B"
+    if score >= 44: return "C"
+    return "D"
 
 
-def compute_ppui(f: NHLSkaterFeatureSet, silent: bool = False) -> dict:
+def compute_ppsi(f: NHLSkaterFeatureSet, silent: bool = False) -> dict:
     """
-    Compute PPUI for a skater and return a results dict.
+    Compute PPSI for a skater and return a results dict.
 
     Returns:
         {
-            "ppui": float (0-100),
+            "ppsi": float (0-100),
             "grade": str,
-            "projected_points": float,
+            "projected_points": float   (cap 0–5),
+            "projected_sog": float      (cap 0–12),
+            "projected_goals": float    (cap 0–3),
+            "projected_assists": float  (cap 0–4),
             "blocks": { OSR, PMR, PER, POP, RPS, TLD },
             "interaction": float,
             "volatility": float,
@@ -246,7 +264,7 @@ def compute_ppui(f: NHLSkaterFeatureSet, silent: bool = False) -> dict:
     rps = score_rps(f)
     tld = score_tld(f)
 
-    ppui_base = (
+    ppsi_base = (
         0.28 * osr +
         0.22 * pmr +
         0.18 * per +
@@ -256,26 +274,40 @@ def compute_ppui(f: NHLSkaterFeatureSet, silent: bool = False) -> dict:
     )
 
     pp1_status = _f(f.tld_pp1_status)
-    interaction = compute_ppui_interaction(
+    interaction = compute_ppsi_interaction(
         osr=osr, pmr=pmr, per=per, pop=pop, rps=rps, tld=tld,
         pp1_status=pp1_status,
     )
 
-    volatility = compute_ppui_volatility(f, pmr=pmr)
+    volatility = compute_ppsi_volatility(f, pmr=pmr)
 
-    ppui_raw = ppui_base + interaction - volatility
-    ppui = _clamp(ppui_raw)
-    grade = ppui_grade(ppui)
+    ppsi_raw = ppsi_base + interaction - volatility
+    ppsi = _clamp(ppsi_raw)
+    grade = ppsi_grade(ppsi)
 
-    # Projected points — sensitivity 0.22 (calibrated for hockey variance)
-    base = f.avg_points_per_game
-    projected_pts = round(base * (1.0 - 0.22 * ((ppui - 50.0) / 50.0)), 2)
+    base_pts          = f.avg_points_per_game
+    base_sog          = f.avg_shots_per_game
+    player_sh_pct     = f.avg_shooting_pct
+
+    projected_pts = base_pts * (1.0 - 0.22 * ((ppsi - 50.0) / 50.0))
+    projected_pts = round(max(0.0, min(5.0, projected_pts)), 2)
+
+    projected_sog = base_sog * (1.0 - 0.12 * ((ppsi - 50.0) / 50.0))
+    projected_sog = round(max(0.0, min(12.0, projected_sog)), 1)
+
+    projected_goals = round(max(0.0, min(3.0, projected_sog * player_sh_pct)), 2)
+
+    projected_assists = round(max(0.0, min(4.0, projected_pts - projected_goals)), 2)
 
     return {
-        "ppui": round(ppui, 1),
+        "ppsi": round(ppsi, 1),
         "grade": grade,
         "projected_points": projected_pts,
-        "base_points": round(base, 2),
+        "projected_sog": projected_sog,
+        "projected_goals": projected_goals,
+        "projected_assists": projected_assists,
+        "base_points": round(base_pts, 2),
+        "base_sog": round(base_sog, 2),
         "blocks": {
             "OSR": round(osr, 1),
             "PMR": round(pmr, 1),
@@ -286,5 +318,5 @@ def compute_ppui(f: NHLSkaterFeatureSet, silent: bool = False) -> dict:
         },
         "interaction": round(interaction, 2),
         "volatility": round(volatility, 2),
-        "ppui_base": round(ppui_base, 2),
+        "ppsi_base": round(ppsi_base, 2),
     }
