@@ -58,6 +58,13 @@ class QBFeatureSet:
     td_over_odds:   Optional[float] = None
     td_under_odds:  Optional[float] = None
 
+    # ── Market lines (from The Rundown via game data)
+    # Used by the GTS modifier in qpyi.py and qtdi.py.
+    # None when The Rundown API did not return data for this game.
+    game_total:      Optional[float] = None  # pre-game over/under line (e.g. 46.5)
+    home_moneyline:  Optional[int]   = None  # home team odds in American format (e.g. -140)
+    away_moneyline:  Optional[int]   = None  # away team odds in American format (e.g. +120)
+
     # ── Base rates (Bayesian-shrunk toward league averages)
     # League baselines: ~230 pass yds/game, ~1.8 TDs/game.
     # Small-sample season rates are pulled toward league average — same

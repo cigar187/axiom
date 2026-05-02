@@ -196,11 +196,11 @@ class RundownAdapter(BaseProvider):
                 return line
         return None
 
-    async def fetch_game_lines(self, target_date: date) -> dict:
+    async def fetch_game_lines(self, target_date: date, sport_id: int = MLB_SPORT_ID) -> dict:
         """
-        Fetch pre-game total and moneyline odds for each MLB game on target_date.
+        Fetch pre-game total and moneyline odds for each game on target_date.
 
-        Calls GET /sports/3/events/{date} and parses:
+        Calls GET /sports/{sport_id}/events/{date} and parses:
           - market_id=3 (totals)    → game_total (the main-line over/under value)
           - market_id=1 (moneyline) → home_moneyline and away_moneyline (American odds)
 
@@ -223,7 +223,7 @@ class RundownAdapter(BaseProvider):
             async with httpx.AsyncClient() as client:
                 raw = await self._get(
                     client,
-                    f"/sports/{MLB_SPORT_ID}/events/{date_str}",
+                    f"/sports/{sport_id}/events/{date_str}",
                     params={"include": "scores,all_periods,lines"},
                 )
         except Exception as exc:

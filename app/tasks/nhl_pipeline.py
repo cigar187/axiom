@@ -51,6 +51,7 @@ from app.services.nhl_props import (
     lookup_prop,
 )
 from app.tasks.nhl_feature_builder import build_all_feature_sets, compute_signal
+from app.services.rundown import RundownAdapter
 from app.utils.logging import get_logger
 
 log = get_logger("nhl_pipeline")
@@ -176,10 +177,22 @@ async def run_nhl_pipeline(game_date: str = None, dry_run: bool = False) -> dict
         log.info("NHL pipeline step 1 complete", games_found=len(game_contexts))
 
         # ─────────────────────────────────────────────────────
+        # Step 1b — Fetch game lines (totals + moneylines)
+        # ─────────────────────────────────────────────────────
+        game_lines_data: dict = {}
+        try:
+            rundown = RundownAdapter()
+            game_lines_data = await rundown.fetch_game_lines(target_date, sport_id=7)
+            log.info("NHL game lines fetched", games_with_lines=len(game_lines_data))
+        except Exception as exc:
+            log.warning("NHL game lines fetch failed, continuing without",
+                        error=str(exc))
+
+        # ─────────────────────────────────────────────────────
         # Step 2 — Build all feature sets and score all players
         # ─────────────────────────────────────────────────────
         log.info("NHL pipeline step 2: building feature sets and scoring players")
-        all_results = build_all_feature_sets(game_contexts, is_playoff=True)
+        all_results = build_all_feature_sets(game_contexts, is_playoff=True, game_lines_data=game_lines_data)
 
         goalies = [
             (p, fs, s) for p, fs, s in all_results

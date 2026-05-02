@@ -13,6 +13,8 @@ All remaining inputs default to 50.0 (neutral) until their data source is connec
 in a future sprint. This matches the same pattern as feature_builder.py, where new
 data sources are added incrementally without breaking the formula.
 """
+import difflib
+
 from app.core.nfl.features import QBFeatureSet
 from app.utils.normalization import clamp
 from app.utils.logging import get_logger
@@ -190,9 +192,10 @@ def build_qb_feature_set(
 
 
 def build_all_feature_sets(
-    starters:       list[dict],
+    starters:        list[dict],
     weather_by_game: dict[str, dict],
-    props:          list[dict],
+    props:           list[dict],
+    game_lines_data: dict = None,
 ) -> list[tuple[dict, QBFeatureSet]]:
     """
     Build a QBFeatureSet for every QB starter in the weekly slate.
@@ -204,10 +207,13 @@ def build_all_feature_sets(
       weather_by_game: Dict keyed by game_id from nfl_weather.get_weather_for_all_games().
       props:           Raw props list from nfl_props.get_nfl_qb_props() — used as fallback
                        lookup if prop fields are not already attached to the starter dict.
+      game_lines_data: Dict of game line data from The Rundown (keyed by event_id).
+                       Provides game_total, home_moneyline, away_moneyline per game.
 
     Returns a list of (starter_dict, QBFeatureSet) tuples — the starter metadata stays
     attached to each feature set so downstream steps (pipeline, DB writer) have full context.
     """
+    game_lines_data = game_lines_data or {}
     # Build a props lookup keyed by normalized QB name for fast access
     yards_props: dict[str, dict] = {}
     td_props:    dict[str, dict] = {}
@@ -251,6 +257,20 @@ def build_all_feature_sets(
             weather = weather,
             props   = props_for_qb,
         )
+
+        # ── Match game lines by fuzzy home team name (0.82 threshold) ─────────
+        # Starter dict has is_home + team + opponent — derive home team from those.
+        is_home_qb = starter.get("is_home", True)
+        qb_home = (starter.get("team") if is_home_qb else starter.get("opponent", "")).lower()
+        gl: dict = {}
+        for entry in game_lines_data.values():
+            rd_home = (entry.get("home_team_name") or "").lower()
+            if rd_home and qb_home and difflib.SequenceMatcher(None, rd_home, qb_home).ratio() >= 0.82:
+                gl = entry
+                break
+        feature_set.game_total     = gl.get("game_total")
+        feature_set.home_moneyline = gl.get("home_moneyline") if is_home_qb else gl.get("away_moneyline")
+        feature_set.away_moneyline = gl.get("away_moneyline") if is_home_qb else gl.get("home_moneyline")
 
         results.append((starter, feature_set))
 

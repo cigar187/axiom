@@ -29,6 +29,8 @@ Usage:
   Can also be run standalone: python -m app.tasks.nhl_feature_builder
 """
 
+import difflib
+
 from app.core.nhl.features import NHLGameContext, NHLGoalieFeatureSet, NHLSkaterFeatureSet
 from app.core.nhl.gsai import compute_gsai
 from app.core.nhl.ppsi import compute_ppsi
@@ -589,8 +591,9 @@ def compute_signal(formula_pts: float, ml_pts: float) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_all_feature_sets(
-    game_contexts: list,
-    is_playoff: bool = True,
+    game_contexts:   list,
+    is_playoff:      bool = True,
+    game_lines_data: dict = None,
 ) -> list[tuple]:
     """
     Score every goalie and skater across a list of game contexts.
@@ -609,10 +612,13 @@ def build_all_feature_sets(
         Players that fail to score are logged at WARNING and excluded from results.
 
     Args:
-        game_contexts: List of NHLGameContext objects (from build_game_contexts()).
-        is_playoff:    When True, the 12% playoff discount is applied to all ML
-                       projections via train_player_ml().
+        game_contexts:   List of NHLGameContext objects (from build_game_contexts()).
+        is_playoff:      When True, the 12% playoff discount is applied to all ML
+                         projections via train_player_ml().
+        game_lines_data: Dict of game line data from The Rundown (keyed by event_id).
+                         Provides game_total, home_moneyline, away_moneyline per game.
     """
+    game_lines_data = game_lines_data or {}
     results:   list[tuple] = []
     n_goalies  = 0
     n_skaters  = 0
@@ -626,6 +632,14 @@ def build_all_feature_sets(
         log.info("nhl_feature_builder: scoring game",
                  matchup=f"{away_team}@{home_team}",
                  game_id=game_id, series_game=ctx.series_game_number)
+
+        # ── Match game lines by fuzzy home team name (0.82 threshold) ─────────
+        game_gl: dict = {}
+        for gl in game_lines_data.values():
+            rd_home = (gl.get("home_team_name") or "").lower()
+            if rd_home and difflib.SequenceMatcher(None, rd_home, home_team.lower()).ratio() >= 0.82:
+                game_gl = gl
+                break
 
         # ── Team stats (club-stats/now) ────────────────────────────────────────
         home_club_stats = get_team_stats(home_team)
@@ -678,6 +692,9 @@ def build_all_feature_sets(
             if is_goalie:
                 try:
                     fs     = build_goalie_feature_set(player, ctx, own_club_stats, opp_club_stats, is_playoff)
+                    fs.game_total     = game_gl.get("game_total")
+                    fs.home_moneyline = game_gl.get("home_moneyline")
+                    fs.away_moneyline = game_gl.get("away_moneyline")
                     score  = compute_gsai(fs, b2b_both=b2b_both)
                     results.append((player, fs, score))
                     n_goalies += 1
@@ -698,6 +715,9 @@ def build_all_feature_sets(
                     fs     = build_skater_feature_set(
                         player, ctx, own_club_stats, opp_club_stats, opp_sv_pct, is_playoff
                     )
+                    fs.game_total     = game_gl.get("game_total")
+                    fs.home_moneyline = game_gl.get("home_moneyline")
+                    fs.away_moneyline = game_gl.get("away_moneyline")
                     score  = compute_ppsi(fs)
 
                     # ML engine — train per player and attach result

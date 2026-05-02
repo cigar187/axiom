@@ -37,6 +37,7 @@ from app.services.nfl_schedule import get_all_starters_this_week
 from app.services.nfl_props import get_nfl_qb_props, match_props_to_starters
 from app.services.nfl_weather import get_weather_for_all_games
 from app.tasks.nfl_feature_builder import build_all_feature_sets
+from app.services.rundown import RundownAdapter
 from app.utils.logging import get_logger
 
 log = get_logger("nfl_pipeline")
@@ -149,6 +150,18 @@ async def run_nfl_pipeline(dry_run: bool = False) -> dict:
         log.info("NFL pipeline step 2 complete", props_found=len(props))
 
         # ─────────────────────────────────────────────────────
+        # Step 2b — Fetch game lines (totals + moneylines)
+        # ─────────────────────────────────────────────────────
+        game_lines_data: dict = {}
+        try:
+            rundown = RundownAdapter()
+            game_lines_data = await rundown.fetch_game_lines(today, sport_id=2)
+            log.info("NFL game lines fetched", games_with_lines=len(game_lines_data))
+        except Exception as exc:
+            log.warning("NFL game lines fetch failed, continuing without",
+                        error=str(exc))
+
+        # ─────────────────────────────────────────────────────
         # Step 3 — Fetch weather
         # ─────────────────────────────────────────────────────
         log.info("NFL pipeline step 3: fetching game-day weather")
@@ -160,7 +173,7 @@ async def run_nfl_pipeline(dry_run: bool = False) -> dict:
         # Step 4 — Build feature sets
         # ─────────────────────────────────────────────────────
         log.info("NFL pipeline step 4: building QB feature sets")
-        feature_tuples = build_all_feature_sets(starters, weather_by_game, props)
+        feature_tuples = build_all_feature_sets(starters, weather_by_game, props, game_lines_data=game_lines_data)
         log.info("NFL pipeline step 4 complete",
                  feature_sets_built=len(feature_tuples))
 

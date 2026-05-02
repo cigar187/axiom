@@ -90,6 +90,13 @@ class NHLGoalieFeatureSet:
     # ── Game context (injected from NHLGameContext) ───────────────────────────
     ctx: Optional[NHLGameContext] = None
 
+    # ── Market lines (from The Rundown via game context)
+    # Used by the GTS modifier in gsai.py.
+    # None when The Rundown API did not return data for this game.
+    game_total:      Optional[float] = None  # pre-game over/under line (e.g. 5.5)
+    home_moneyline:  Optional[int]   = None  # home team odds in American format (e.g. -140)
+    away_moneyline:  Optional[int]   = None  # away team odds in American format (e.g. +120)
+
     # ── Prop lines (filled by odds fetcher — The Rundown API) ─────────────────
     shots_line: Optional[float] = None           # shots-faced O/U line
     shots_over_odds: Optional[float] = None
@@ -223,6 +230,13 @@ class NHLSkaterFeatureSet:
 
     # ── Game context (injected from NHLGameContext) ───────────────────────────
     ctx: Optional[NHLGameContext] = None
+
+    # ── Market lines (from The Rundown via game context)
+    # Used by the GTS modifier in ppsi.py.
+    # None when The Rundown API did not return data for this game.
+    game_total:      Optional[float] = None  # pre-game over/under line (e.g. 5.5)
+    home_moneyline:  Optional[int]   = None  # home team odds in American format (e.g. -140)
+    away_moneyline:  Optional[int]   = None  # away team odds in American format (e.g. +120)
 
     # ── Prop lines (filled by odds fetcher — The Rundown API) ─────────────────
     points_line: Optional[float] = None
