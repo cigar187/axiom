@@ -68,6 +68,41 @@ def _f(val, fallback: float = NEUTRAL) -> float:
     return val if val is not None else fallback
 
 
+def compute_gts_modifier(f: "QBFeatureSet") -> dict:
+    """
+    GTS — Game Total Score modifier (NFL, touchdowns).
+
+    Calibrated for NFL game totals (league avg ≈ 46.5).
+    High total → more scoring → QTDI goes UP (more TD opportunities).
+    Low total  → defensive game → QTDI goes DOWN.
+
+    Returns:
+        {"score_adjustment": float, "ip_cap_adjustment": float}
+    Defaults to 0.0 when game_total is not yet wired to the feature set.
+    """
+    game_total = getattr(f, "game_total", None)
+    if game_total is None or game_total == 0.0:
+        return {"score_adjustment": 0.0, "ip_cap_adjustment": 0.0}
+
+    league_avg = 46.5
+    aw = game_total / league_avg  # 1.0 = neutral
+
+    if game_total >= 52.0:
+        score_adj = (aw - 1.0) * 15.0   # high total → boost — QTDI increases
+        ip_cap_adj = 0.0
+    elif game_total <= 40.0:
+        score_adj = (aw - 1.0) * 15.0   # low total → penalty — QTDI decreases (aw < 1.0 → negative)
+        ip_cap_adj = 0.0
+    else:
+        score_adj = 0.0
+        ip_cap_adj = 0.0
+
+    return {
+        "score_adjustment": round(score_adj, 2),
+        "ip_cap_adjustment": round(ip_cap_adj, 2),
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # Block scorers — QTDI-specific
 # ─────────────────────────────────────────────────────────────
@@ -400,6 +435,17 @@ def compute_qtdi(f: QBFeatureSet, silent: bool = False) -> dict:
     qtdi_raw = qtdi_base + interaction + volatility
     qtdi = clamp(qtdi_raw)
 
+    # ── GTS modifier (game total context)
+    gts = compute_gts_modifier(f)
+    qtdi = clamp(qtdi + gts["score_adjustment"])
+    gts_score_adj = gts["score_adjustment"]
+    gts_ip_cap_adj = gts["ip_cap_adjustment"]
+    if gts_score_adj != 0.0 and not silent:
+        log.info("QTDI GTS modifier applied",
+                 qb=f.player_name,
+                 game_total=getattr(f, "game_total", None),
+                 score_adjustment=gts_score_adj)
+
     grade = qtdi_grade(qtdi)
 
     # ── Projection
@@ -430,6 +476,9 @@ def compute_qtdi(f: QBFeatureSet, silent: bool = False) -> dict:
         "qtdi_volatility":  round(volatility, 2),
         "qtdi":             round(qtdi, 2),
         "grade":            grade,
+        "gts_score_adj":    gts_score_adj,
+        # ip_cap_adjustment is informational only — not yet wired to expected_ip(). Wire in a follow-up block.
+        "gts_ip_cap_adj":   gts_ip_cap_adj,
         # ── Projection
         "base_tds":         round(base_tds, 2),
         "projected_tds":    round(projected_tds, 2),

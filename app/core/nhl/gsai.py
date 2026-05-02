@@ -62,6 +62,41 @@ def _f(val, fallback: float = NEUTRAL) -> float:
     return val if val is not None else fallback
 
 
+def compute_gts_modifier(f: "NHLGoalieFeatureSet") -> dict:
+    """
+    GTS — Game Total Score modifier (NHL, goalie).
+
+    Calibrated for NHL goal totals (league avg ≈ 5.5).
+    High total → offensive environment → GSAI goes DOWN (goalie faces more shots).
+    Low total  → defensive environment → GSAI goes UP (goalie faces fewer shots).
+
+    Returns:
+        {"score_adjustment": float, "ip_cap_adjustment": float}
+    Defaults to 0.0 when game_total is not yet wired to the feature set.
+    """
+    game_total = getattr(f, "game_total", None)
+    if game_total is None or game_total == 0.0:
+        return {"score_adjustment": 0.0, "ip_cap_adjustment": 0.0}
+
+    league_avg = 5.5
+    aw = game_total / league_avg  # 1.0 = neutral
+
+    if game_total >= 6.5:
+        score_adj = -(aw - 1.0) * 10.0   # high total → penalty — GSAI decreases
+        ip_cap_adj = 0.0
+    elif game_total <= 5.0:
+        score_adj = -(aw - 1.0) * 10.0   # low total → boost — GSAI increases (aw < 1.0 → positive)
+        ip_cap_adj = 0.0
+    else:
+        score_adj = 0.0
+        ip_cap_adj = 0.0
+
+    return {
+        "score_adjustment": round(score_adj, 2),
+        "ip_cap_adjustment": round(ip_cap_adj, 2),
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # Block scorers
 # ─────────────────────────────────────────────────────────────
@@ -307,6 +342,18 @@ def compute_gsai(
 
     gsai_raw = gsai_base + interaction - volatility
     gsai = _clamp(gsai_raw)
+
+    # ── GTS modifier (game total context)
+    gts = compute_gts_modifier(f)
+    gsai = _clamp(gsai + gts["score_adjustment"])
+    gts_score_adj = gts["score_adjustment"]
+    gts_ip_cap_adj = gts["ip_cap_adjustment"]
+    if gts_score_adj != 0.0 and not silent:
+        log.info("GSAI GTS modifier applied",
+                 goalie=f.player_name,
+                 game_total=getattr(f, "game_total", None),
+                 score_adjustment=gts_score_adj)
+
     grade = gsai_grade(gsai)
 
     # Projected shots — sensitivity 0.22, capped 15–50
@@ -330,4 +377,7 @@ def compute_gsai(
         "interaction": round(interaction, 2),
         "volatility": round(volatility, 2),
         "gsai_base": round(gsai_base, 2),
+        "gts_score_adj":  gts_score_adj,
+        # ip_cap_adjustment is informational only — not yet wired to expected_ip(). Wire in a follow-up block.
+        "gts_ip_cap_adj": gts_ip_cap_adj,
     }

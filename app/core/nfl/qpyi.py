@@ -75,6 +75,41 @@ def _f(val, fallback: float = NEUTRAL) -> float:
     return val if val is not None else fallback
 
 
+def compute_gts_modifier(f: "QBFeatureSet") -> dict:
+    """
+    GTS — Game Total Score modifier (NFL, passing yards).
+
+    Calibrated for NFL game totals (league avg ≈ 46.5).
+    High total → pass-heavy environment → QPYI goes UP (more yards expected).
+    Low total  → run-heavy/defensive game → QPYI goes DOWN.
+
+    Returns:
+        {"score_adjustment": float, "ip_cap_adjustment": float}
+    Defaults to 0.0 when game_total is not yet wired to the feature set.
+    """
+    game_total = getattr(f, "game_total", None)
+    if game_total is None or game_total == 0.0:
+        return {"score_adjustment": 0.0, "ip_cap_adjustment": 0.0}
+
+    league_avg = 46.5
+    aw = game_total / league_avg  # 1.0 = neutral
+
+    if game_total >= 52.0:
+        score_adj = (aw - 1.0) * 15.0   # high total → boost — QPYI increases
+        ip_cap_adj = 0.0
+    elif game_total <= 40.0:
+        score_adj = (aw - 1.0) * 15.0   # low total → penalty — QPYI decreases (aw < 1.0 → negative)
+        ip_cap_adj = 0.0
+    else:
+        score_adj = 0.0
+        ip_cap_adj = 0.0
+
+    return {
+        "score_adjustment": round(score_adj, 2),
+        "ip_cap_adjustment": round(ip_cap_adj, 2),
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # Block scorers
 # ─────────────────────────────────────────────────────────────
@@ -641,6 +676,17 @@ def compute_qpyi(f: QBFeatureSet, silent: bool = False) -> dict:
     qpyi_raw = qpyi_base + interaction + volatility
     qpyi = clamp(qpyi_raw)
 
+    # ── GTS modifier (game total context)
+    gts = compute_gts_modifier(f)
+    qpyi = clamp(qpyi + gts["score_adjustment"])
+    gts_score_adj = gts["score_adjustment"]
+    gts_ip_cap_adj = gts["ip_cap_adjustment"]
+    if gts_score_adj != 0.0 and not silent:
+        log.info("QPYI GTS modifier applied",
+                 qb=f.player_name,
+                 game_total=getattr(f, "game_total", None),
+                 score_adjustment=gts_score_adj)
+
     grade = qpyi_grade(qpyi)
 
     # ── Projection
@@ -681,6 +727,9 @@ def compute_qpyi(f: QBFeatureSet, silent: bool = False) -> dict:
         "qpyi_volatility":  round(volatility, 2),
         "qpyi":             round(qpyi, 2),
         "grade":            grade,
+        "gts_score_adj":    gts_score_adj,
+        # ip_cap_adjustment is informational only — not yet wired to expected_ip(). Wire in a follow-up block.
+        "gts_ip_cap_adj":   gts_ip_cap_adj,
         # ── Projection
         "base_yards":       round(base_yards, 1),
         "projected_yards":  round(projected_yards, 1),
