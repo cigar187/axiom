@@ -34,7 +34,11 @@ import difflib
 from app.core.nhl.features import NHLGameContext, NHLGoalieFeatureSet, NHLSkaterFeatureSet
 from app.core.nhl.gsai import compute_gsai
 from app.core.nhl.ppsi import compute_ppsi
-from app.services.nhl_schedule import build_game_contexts, get_roster_from_boxscore
+from app.services.nhl_schedule import (
+    build_game_contexts,
+    get_roster_from_boxscore,
+    get_roster_from_pregame,
+)
 from app.services.nhl_stats import (
     extract_goalie_season_stats,
     extract_player_season_stats,
@@ -649,13 +653,21 @@ def build_all_feature_sets(
         home_agg = _extract_team_aggregates(home_club_stats)
         away_agg = _extract_team_aggregates(away_club_stats)
 
-        # ── Boxscore rosters ──────────────────────────────────────────────────
+        # ── Boxscore rosters (fall back to play-by-play rosterSpots for FUT games) ──
         h_fwds, h_defs, h_gols = get_roster_from_boxscore(int(game_id), home_team)
         a_fwds, a_defs, a_gols = get_roster_from_boxscore(int(game_id), away_team)
 
         if not (h_fwds or h_defs or h_gols or a_fwds or a_defs or a_gols):
             log.warning(
-                "nhl_feature_builder: boxscore empty — game may not have started yet",
+                "nhl_feature_builder: boxscore empty — fetching rosterSpots from play-by-play",
+                game_id=game_id, matchup=f"{away_team}@{home_team}",
+            )
+            (h_fwds, h_defs, h_gols), (a_fwds, a_defs, a_gols) = \
+                get_roster_from_pregame(int(game_id))
+
+        if not (h_fwds or h_defs or h_gols or a_fwds or a_defs or a_gols):
+            log.warning(
+                "nhl_feature_builder: rosterSpots also empty — skipping game",
                 game_id=game_id, matchup=f"{away_team}@{home_team}",
             )
             continue

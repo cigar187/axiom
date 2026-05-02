@@ -221,6 +221,96 @@ def get_roster_from_boxscore(
 
 
 # ─────────────────────────────────────────────────────────────
+# Pre-game roster fallback (used when boxscore is empty / game FUT)
+# ─────────────────────────────────────────────────────────────
+
+def get_roster_from_pregame(
+    game_id: int,
+) -> tuple[
+    tuple[list[dict], list[dict], list[dict]],   # home: (fwds, defs, gols)
+    tuple[list[dict], list[dict], list[dict]],   # away: (fwds, defs, gols)
+]:
+    """
+    Fetch the game-specific eligible roster from the NHL play-by-play endpoint.
+
+    Used as a fallback when get_roster_from_boxscore() returns nothing because
+    the game has not started yet (gameState = FUT).
+
+    The play-by-play endpoint exposes rosterSpots which lists every player
+    registered for this specific game by the team — the actual game roster,
+    NOT the full season roster.  This is the most accurate pre-game source
+    available in the NHL public API.
+
+    Player dicts are shaped identically to the boxscore endpoint so the
+    feature builder can consume them without modification:
+      {
+        "playerId": int,
+        "name":     {"default": "First Last"},
+        "position": str,   # C, L, R, D, or G
+        "toi":      "0:00",
+        "goals": 0, "assists": 0, "points": 0, "shots": 0,
+      }
+
+    Returns ((home_fwds, home_defs, home_gols), (away_fwds, away_defs, away_gols)).
+    On any failure, returns two empty tuples so the caller can handle gracefully.
+    """
+    empty = ([], [], [])
+    data = _fetch(f"{NHL_API}/gamecenter/{game_id}/play-by-play")
+    if not data:
+        log.warning("nhl_schedule: play-by-play fetch returned nothing",
+                    game_id=game_id)
+        return empty, empty
+
+    home_id   = data.get("homeTeam", {}).get("id")
+    away_id   = data.get("awayTeam", {}).get("id")
+    home_abbr = data.get("homeTeam", {}).get("abbrev", "HOME")
+    away_abbr = data.get("awayTeam", {}).get("abbrev", "AWAY")
+    spots     = data.get("rosterSpots", [])
+
+    if not spots:
+        log.warning("nhl_schedule: rosterSpots empty in play-by-play",
+                    game_id=game_id)
+        return empty, empty
+
+    def _to_player_dict(raw: dict) -> dict:
+        first = raw.get("firstName", {}).get("default", "")
+        last  = raw.get("lastName",  {}).get("default", "")
+        return {
+            "playerId": raw.get("playerId", 0),
+            "name":     {"default": f"{first} {last}".strip()},
+            "position": raw.get("positionCode", "C"),
+            "toi":      "0:00",
+            "goals":    0,
+            "assists":  0,
+            "points":   0,
+            "shots":    0,
+        }
+
+    def _split(team_spots: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+        fwds = [_to_player_dict(s) for s in team_spots
+                if s.get("positionCode") in ("C", "L", "R")]
+        defs = [_to_player_dict(s) for s in team_spots
+                if s.get("positionCode") == "D"]
+        gols = [_to_player_dict(s) for s in team_spots
+                if s.get("positionCode") == "G"]
+        return fwds, defs, gols
+
+    home_spots = [s for s in spots if s.get("teamId") == home_id]
+    away_spots = [s for s in spots if s.get("teamId") == away_id]
+
+    home_roster = _split(home_spots)
+    away_roster = _split(away_spots)
+
+    log.info(
+        "nhl_schedule: pre-game roster fetched from play-by-play rosterSpots",
+        game_id=game_id,
+        home=f"{home_abbr} {len(home_spots)} players",
+        away=f"{away_abbr} {len(away_spots)} players",
+    )
+    return home_roster, away_roster
+
+
+# ─────────────────────────────────────────────────────────────
 # Build game contexts — the primary entry point for the pipeline
 # ─────────────────────────────────────────────────────────────
 

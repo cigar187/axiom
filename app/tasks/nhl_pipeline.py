@@ -331,6 +331,41 @@ async def run_nhl_pipeline(game_date: str = None, dry_run: bool = False) -> dict
         log.info("NHL pipeline step 4 complete", players_enriched=len(enriched))
 
         # ─────────────────────────────────────────────────────
+        # Step 4b — Cap to game-night dress sizes per team
+        # Top 12 forwards + top 6 defensemen + top 2 goalies,
+        # ranked by projected_value.  Players outside those caps
+        # are dropped here and never written to the database.
+        # ─────────────────────────────────────────────────────
+        _FWD_POS = {"C", "L", "R"}
+        from collections import defaultdict as _dd
+        _tg: dict = _dd(list)
+        _tf: dict = _dd(list)
+        _td: dict = _dd(list)
+        for _row in enriched:
+            _team = _row["feature_set"].team
+            _pos  = (_row["player_dict"].get("position") or "").upper()
+            if _row["is_goalie"]:
+                _tg[_team].append(_row)
+            elif _pos in _FWD_POS:
+                _tf[_team].append(_row)
+            else:
+                _td[_team].append(_row)
+        _capped: list = []
+        for _team in set(list(_tg) + list(_tf) + list(_td)):
+            _capped += sorted(_tg[_team],
+                              key=lambda r: r["score"].get("gsai", 0),
+                              reverse=True)[:2]
+            _capped += sorted(_tf[_team],
+                              key=lambda r: r["score"].get("projected_points", 0),
+                              reverse=True)[:12]
+            _capped += sorted(_td[_team],
+                              key=lambda r: r["score"].get("projected_points", 0),
+                              reverse=True)[:6]
+        log.info("NHL pipeline step 4b: capped to dress sizes",
+                 before=len(enriched), after=len(_capped))
+        enriched = _capped
+
+        # ─────────────────────────────────────────────────────
         # Step 5 — Save to database
         # ─────────────────────────────────────────────────────
         if dry_run:
