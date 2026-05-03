@@ -46,6 +46,8 @@ from app.schemas.schemas import (
     PropLine,
     RunDailyRequest,
     RunDailyResponse,
+    PitcherWarningFlag,
+    PitcherWarningsResponse,
 )
 from app.tasks.pipeline import run_daily_pipeline
 from app.utils.csv_export import rows_to_csv, model_outputs_to_export_rows
@@ -400,6 +402,105 @@ async def rankings_today(
 # ─────────────────────────────────────────────────────────────
 # /v1/pitchers/{id}/profile
 # ─────────────────────────────────────────────────────────────
+
+@router.get("/v1/pitchers/warnings", tags=["Pitchers"])
+async def pitchers_warnings(
+    target_date: Optional[date] = Query(
+        default=None, description="Date (YYYY-MM-DD). Defaults to today."
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Returns today's pitcher warning flags with current HSSI/KSSI scores.
+    A warning is raised when a pitcher missed their sim median in 2 of their
+    last 3 completed starts.
+    """
+    from sqlalchemy import text as _text
+
+    query_date = target_date or _today_eastern()
+
+    # ── 1. Fetch today's flags
+    flag_rows = await db.execute(
+        _text("""
+            SELECT pitcher_id, pitcher_name, flag_type,
+                   actual_ks, floor_ks, actual_hits, floor_hits
+            FROM pitcher_warning_flags
+            WHERE game_date = :today
+            ORDER BY flag_type, pitcher_name
+        """),
+        {"today": query_date},
+    )
+    flags = flag_rows.fetchall()
+
+    if not flags:
+        return PitcherWarningsResponse(
+            date=str(query_date),
+            generated_at=datetime.utcnow().isoformat(),
+            flag_count=0,
+            warnings=[],
+        )
+
+    # ── 2. Pull current HSSI/KSSI scores from model_outputs_daily
+    pitcher_ids = [str(f.pitcher_id) for f in flags]
+
+    score_rows = await db.execute(
+        _text("""
+            SELECT DISTINCT ON (mod.pitcher_id)
+                mod.pitcher_id,
+                mod.hssi,
+                mod.kssi,
+                pp.team_id,
+                g.home_team,
+                g.away_team
+            FROM model_outputs_daily mod
+            JOIN probable_pitchers pp
+              ON pp.pitcher_id = mod.pitcher_id
+             AND pp.game_id    = mod.game_id
+            JOIN games g
+              ON g.game_id = mod.game_id
+            WHERE mod.game_date  = :today
+              AND mod.pitcher_id = ANY(:pids)
+            ORDER BY mod.pitcher_id, mod.market_type
+        """),
+        {"today": query_date, "pids": pitcher_ids},
+    )
+    scores = {str(r.pitcher_id): r for r in score_rows.fetchall()}
+
+    # ── 3. Build response
+    warnings = []
+    for f in flags:
+        pid = str(f.pitcher_id)
+        sc = scores.get(pid)
+
+        team_abbrev = get_team_abbrev(sc.team_id) if sc else None
+        opponent = None
+        if sc and team_abbrev:
+            pitcher_team_name = get_team_name(sc.team_id) or ""
+            opponent = (
+                sc.away_team if pitcher_team_name == sc.home_team else sc.home_team
+            )
+
+        warnings.append(PitcherWarningFlag(
+            pitcher_name=f.pitcher_name,
+            team=team_abbrev,
+            opponent=opponent,
+            flag_type=f.flag_type,
+            actual_ks=f.actual_ks,
+            floor_ks=f.floor_ks,
+            actual_hits=f.actual_hits,
+            floor_hits=f.floor_hits,
+            hssi_score=sc.hssi if sc else None,
+            kssi_score=sc.kssi if sc else None,
+        ))
+
+    return PitcherWarningsResponse(
+        date=str(query_date),
+        generated_at=datetime.utcnow().isoformat(),
+        flag_count=len(warnings),
+        warnings=warnings,
+    )
+
 
 @router.get("/v1/pitchers/{pitcher_id}/profile", response_model=PitcherProfile, tags=["Pitchers"])
 async def pitcher_profile(

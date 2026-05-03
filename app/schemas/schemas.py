@@ -156,6 +156,29 @@ class PitchersTodayResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────
+# /v1/pitchers/warnings  — today's underperformance flags
+# ─────────────────────────────────────────────────────────────
+
+class PitcherWarningFlag(BaseModel):
+    pitcher_name: str
+    team:         Optional[str] = None
+    opponent:     Optional[str] = None
+    flag_type:    str                     # UNRELIABLE_KS | UNRELIABLE_HITS | UNRELIABLE_BOTH
+    actual_ks:    Optional[float] = None
+    floor_ks:     Optional[float] = None
+    actual_hits:  Optional[float] = None
+    floor_hits:   Optional[float] = None
+    hssi_score:   Optional[float] = None
+    kssi_score:   Optional[float] = None
+
+class PitcherWarningsResponse(BaseModel):
+    date:         str
+    generated_at: str
+    flag_count:   int
+    warnings:     list[PitcherWarningFlag]
+
+
+# ─────────────────────────────────────────────────────────────
 # /v1/rankings/today  — sorted by strongest under signal
 # ─────────────────────────────────────────────────────────────
 
