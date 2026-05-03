@@ -144,6 +144,7 @@ class PitcherTodayRow(BaseModel):
     sim_confidence_hits: Optional[str] = None   # HIGH_OVER / HIGH_UNDER / LEAN_OVER / LEAN_UNDER / SPLIT
     sim_confidence_ks: Optional[str] = None
     sim_kill_streak_prob: Optional[float] = None  # % of runs where proj_ks >= 10
+    ops_hook: Optional[float] = None              # manager hook tendency (0-100)
 
 
 class PitchersTodayResponse(BaseModel):
@@ -178,6 +179,20 @@ class PitcherWarningsResponse(BaseModel):
     generated_at: str
     flag_count:   int
     warnings:     list[PitcherWarningFlag]
+
+class BookShieldPitcher(BaseModel):
+    pitcher_name:   str
+    team:           Optional[str]   = None
+    opponent:       Optional[str]   = None
+    no_line_market: str                    # "strikeouts" | "hits_allowed" | "both"
+    hssi_score:     Optional[float] = None
+    kssi_score:     Optional[float] = None
+
+class BookShieldResponse(BaseModel):
+    date:          str
+    generated_at:  str
+    pitcher_count: int
+    pitchers:      list[BookShieldPitcher]
 
 
 # ─────────────────────────────────────────────────────────────

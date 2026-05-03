@@ -48,6 +48,8 @@ from app.schemas.schemas import (
     RunDailyResponse,
     PitcherWarningFlag,
     PitcherWarningsResponse,
+    BookShieldPitcher,
+    BookShieldResponse,
 )
 from app.tasks.pipeline import run_daily_pipeline
 from app.utils.csv_export import rows_to_csv, model_outputs_to_export_rows
@@ -206,6 +208,11 @@ async def pitchers_today(
     ml_rows = (await db.execute(ml_stmt)).scalars().all()
     ml_by_pitcher = {m.pitcher_id: m for m in ml_rows}
 
+    # Pull ops_hook from pitcher_features_daily in one query
+    feat_stmt = select(PitcherFeaturesDaily).where(PitcherFeaturesDaily.game_date == query_date)
+    feat_rows = (await db.execute(feat_stmt)).scalars().all()
+    feat_by_pitcher = {f.pitcher_id: f for f in feat_rows}
+
     pitcher_rows = []
     for pid, pdata in pitcher_map.items():
         pitcher = pdata["pitcher"]
@@ -322,6 +329,7 @@ async def pitchers_today(
             sim_confidence_hits=primary.sim_confidence_hits,
             sim_confidence_ks=primary.sim_confidence_ks,
             sim_kill_streak_prob=primary.sim_kill_streak_prob,
+            ops_hook=feat_by_pitcher[pid].ops_hook if pid in feat_by_pitcher else None,
         )
         pitcher_rows.append(row)
 
@@ -502,6 +510,102 @@ async def pitchers_warnings(
         generated_at=datetime.utcnow().isoformat(),
         flag_count=len(warnings),
         warnings=warnings,
+    )
+
+
+@router.get("/v1/pitchers/bookshield", tags=["Pitchers"])
+async def pitchers_bookshield(
+    target_date: Optional[date] = Query(
+        default=None, description="Date (YYYY-MM-DD). Defaults to today."
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    """
+    Returns today's pitchers who have NO sportsbook line posted (line IS NULL
+    in model_outputs_daily) and have NOT triggered a warning flag today.
+    These are 'clean' pitchers the books haven't priced — potential edges.
+    """
+    from sqlalchemy import text as _text
+
+    query_date = target_date or _today_eastern()
+
+    # ── 1. Find pitchers with a missing line for at least one market today
+    no_line_rows = await db.execute(
+        _text("""
+            SELECT
+                mod.pitcher_id,
+                pp.pitcher_name,
+                pp.team_id,
+                g.home_team,
+                g.away_team,
+                BOOL_OR(mod.line IS NULL AND mod.market_type = 'strikeouts')   AS no_ks_line,
+                BOOL_OR(mod.line IS NULL AND mod.market_type = 'hits_allowed') AS no_hits_line,
+                MAX(mod.hssi) AS hssi,
+                MAX(mod.kssi) AS kssi
+            FROM model_outputs_daily mod
+            JOIN probable_pitchers pp
+              ON pp.pitcher_id = mod.pitcher_id
+             AND pp.game_id    = mod.game_id
+            JOIN games g
+              ON g.game_id = mod.game_id
+            WHERE mod.game_date = :today
+            GROUP BY mod.pitcher_id, pp.pitcher_name, pp.team_id, g.home_team, g.away_team
+        """),
+        {"today": query_date},
+    )
+    candidates = [r for r in no_line_rows.fetchall() if r.no_ks_line or r.no_hits_line]
+
+    if not candidates:
+        return BookShieldResponse(
+            date=str(query_date),
+            generated_at=datetime.utcnow().isoformat(),
+            pitcher_count=0,
+            pitchers=[],
+        )
+
+    # ── 2. Exclude any pitcher who has a warning flag today
+    flagged_ids = await db.execute(
+        _text("""
+            SELECT pitcher_id FROM pitcher_warning_flags
+            WHERE game_date = :today
+        """),
+        {"today": query_date},
+    )
+    flagged = {str(r.pitcher_id) for r in flagged_ids.fetchall()}
+
+    clean = [r for r in candidates if str(r.pitcher_id) not in flagged]
+
+    # ── 3. Build response
+    pitchers = []
+    for r in clean:
+        team_abbrev = get_team_abbrev(r.team_id) if r.team_id else None
+        pitcher_team_name = get_team_name(r.team_id) or ""
+        opponent = (
+            r.away_team if pitcher_team_name == r.home_team else r.home_team
+        ) if team_abbrev else None
+
+        if r.no_ks_line and r.no_hits_line:
+            market = "both"
+        elif r.no_ks_line:
+            market = "strikeouts"
+        else:
+            market = "hits_allowed"
+
+        pitchers.append(BookShieldPitcher(
+            pitcher_name=r.pitcher_name,
+            team=team_abbrev,
+            opponent=opponent,
+            no_line_market=market,
+            hssi_score=r.hssi,
+            kssi_score=r.kssi,
+        ))
+
+    return BookShieldResponse(
+        date=str(query_date),
+        generated_at=datetime.utcnow().isoformat(),
+        pitcher_count=len(pitchers),
+        pitchers=sorted(pitchers, key=lambda p: p.pitcher_name),
     )
 
 
