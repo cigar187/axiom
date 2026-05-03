@@ -10,7 +10,14 @@ Endpoints:
   GET  /v1/exports/daily.csv
 """
 from datetime import date, datetime
+import zoneinfo
 from typing import Optional
+
+_EASTERN = zoneinfo.ZoneInfo("America/New_York")
+
+
+def _today_eastern() -> date:
+    return datetime.now(tz=_EASTERN).date()
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -1443,7 +1450,7 @@ async def nhl_players_today(
     Skaters have four cards (markets: points, goals, assists, shots_on_goal).
     Response is separated into { "goalies": [...], "skaters": [...] }.
     """
-    query_date = target_date or date.today()
+    query_date = target_date or _today_eastern()
     rows = await _nhl_rows_for_date(db, query_date)
 
     if not rows:
@@ -1756,7 +1763,7 @@ async def run_nhl_daily_task(
 
     return {
         "status":    "started",
-        "game_date": game_date or str(date.today()),
+        "game_date": game_date or str(_today_eastern()),
         "dry_run":   dry_run,
         "message": (
             "NHL pipeline is running in the background. "

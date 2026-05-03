@@ -1040,6 +1040,10 @@ async def _persist_results(
                     log.warning("ML label_completed_games failed (non-fatal)", error=str(e))
                     await ml_session.rollback()
 
+            # ── Step 2b: Flag pitchers with recent underperformance trends
+            flags_written = await _flag_underperforming_pitchers(target_date)
+            log.info("Pitcher warning flags written", count=flags_written)
+
             # ── Step 3: Train + Predict (always runs regardless of steps 1/2)
             ml_result = {"trained": False, "ml_outputs": []}
             async with AsyncSessionLocal() as ml_session:
@@ -1220,3 +1224,149 @@ _TEAM_ID_TO_ABBREV: dict[str, str] = {
 
 def _team_id_to_abbrev(team_id: str) -> str:
     return _TEAM_ID_TO_ABBREV.get(str(team_id), "")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pitcher warning flags — post-labeling underperformance detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _flag_underperforming_pitchers(target_date: "date") -> int:
+    """
+    For each pitcher scored today, check their last 3 completed starts.
+    If they missed their sim median in 2 or more of those starts, write
+    a warning flag to pitcher_warning_flags.
+
+    flag_type values:
+      UNRELIABLE_KS    — actual_ks < sim_median_ks in 2+ of last 3
+      UNRELIABLE_HITS  — actual_hits > sim_median_hits in 2+ of last 3
+      UNRELIABLE_BOTH  — both conditions true simultaneously
+
+    Runs in its own session — failure is non-fatal.
+    Returns count of flags written.
+    """
+    from sqlalchemy import text as _text
+    from app.models.base import AsyncSessionLocal
+
+    flags_written = 0
+
+    async with AsyncSessionLocal() as session:
+        try:
+            # ── 1. Get distinct pitchers scored today + their names
+            today_rows = await session.execute(
+                _text("""
+                    SELECT DISTINCT mod.pitcher_id, pp.pitcher_name
+                    FROM model_outputs_daily mod
+                    JOIN probable_pitchers pp
+                      ON pp.pitcher_id = mod.pitcher_id
+                    WHERE mod.game_date = :today
+                """),
+                {"today": target_date},
+            )
+            pitchers = today_rows.fetchall()
+
+            for row in pitchers:
+                pitcher_id   = row.pitcher_id
+                pitcher_name = row.pitcher_name
+
+                # ── 2. Fetch last 3 completed starts with both actuals and sim medians
+                history = await session.execute(
+                    _text("""
+                        SELECT
+                            mts.game_date,
+                            mts.actual_ks,
+                            mts.actual_hits,
+                            mod.sim_median_ks,
+                            mod.sim_median_hits
+                        FROM ml_training_samples mts
+                        JOIN model_outputs_daily mod
+                          ON mod.pitcher_id = mts.pitcher_id
+                         AND mod.game_date  = mts.game_date
+                        WHERE mts.pitcher_id  = :pid
+                          AND mts.is_complete = true
+                          AND mts.game_date   < :today
+                          AND mts.actual_ks   IS NOT NULL
+                          AND mts.actual_hits IS NOT NULL
+                          AND mod.sim_median_ks   IS NOT NULL
+                          AND mod.sim_median_hits IS NOT NULL
+                        ORDER BY mts.game_date DESC
+                        LIMIT 3
+                    """),
+                    {"pid": pitcher_id, "today": target_date},
+                )
+                starts = history.fetchall()
+
+                if len(starts) < 2:
+                    continue
+
+                # ── 3. Score each condition
+                ks_misses   = sum(1 for s in starts if s.actual_ks   < s.sim_median_ks)
+                hits_misses = sum(1 for s in starts if s.actual_hits > s.sim_median_hits)
+
+                unreliable_ks   = ks_misses   >= 2
+                unreliable_hits = hits_misses >= 2
+
+                if not unreliable_ks and not unreliable_hits:
+                    continue
+
+                if unreliable_ks and unreliable_hits:
+                    flag_type = "UNRELIABLE_BOTH"
+                elif unreliable_ks:
+                    flag_type = "UNRELIABLE_KS"
+                else:
+                    flag_type = "UNRELIABLE_HITS"
+
+                # ── 4. Skip if this pitcher already has a flag today
+                existing = await session.execute(
+                    _text("""
+                        SELECT 1 FROM pitcher_warning_flags
+                        WHERE pitcher_id = :pid
+                          AND game_date  = :today
+                        LIMIT 1
+                    """),
+                    {"pid": pitcher_id, "today": target_date},
+                )
+                if existing.fetchone():
+                    continue
+
+                # ── 5. Write the flag
+                last = starts[0]
+                await session.execute(
+                    _text("""
+                        INSERT INTO pitcher_warning_flags
+                            (pitcher_id, pitcher_name, game_date,
+                             actual_ks, floor_ks,
+                             actual_hits, floor_hits,
+                             flag_type)
+                        VALUES
+                            (:pid, :name, :today,
+                             :actual_ks, :floor_ks,
+                             :actual_hits, :floor_hits,
+                             :flag_type)
+                    """),
+                    {
+                        "pid":         pitcher_id,
+                        "name":        pitcher_name,
+                        "today":       target_date,
+                        "actual_ks":   last.actual_ks,
+                        "floor_ks":    last.sim_median_ks,
+                        "actual_hits": last.actual_hits,
+                        "floor_hits":  last.sim_median_hits,
+                        "flag_type":   flag_type,
+                    },
+                )
+                flags_written += 1
+                log.info(
+                    "Pitcher warning flag written",
+                    pitcher=pitcher_name,
+                    flag=flag_type,
+                    ks_misses=ks_misses,
+                    hits_misses=hits_misses,
+                )
+
+            await session.commit()
+
+        except Exception as exc:
+            log.warning("flag_underperforming_pitchers failed (non-fatal)", error=str(exc))
+            await session.rollback()
+
+    return flags_written

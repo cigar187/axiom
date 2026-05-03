@@ -25,8 +25,9 @@ Error handling:
 import json
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from typing import Optional
+import zoneinfo
 
 from app.core.nhl.features import NHLGameContext
 from app.utils.logging import get_logger
@@ -69,7 +70,9 @@ def _fetch(url: str, timeout: int = TIMEOUT) -> Optional[dict | list]:
 # ─────────────────────────────────────────────────────────────
 
 def _today_str() -> str:
-    return str(date.today())
+    """Return today's date in Eastern time (NHL schedule uses ET, not UTC)."""
+    eastern = zoneinfo.ZoneInfo("America/New_York")
+    return datetime.now(tz=eastern).strftime("%Y-%m-%d")
 
 
 def _teams_that_played(game_date_str: str) -> set[str]:

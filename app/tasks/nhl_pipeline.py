@@ -29,8 +29,16 @@ Run locally without writing to the DB:
 """
 import asyncio
 import time
-from datetime import date
+import zoneinfo
+from datetime import date, datetime
 from typing import Optional
+
+_EASTERN = zoneinfo.ZoneInfo("America/New_York")
+
+
+def _today_eastern() -> date:
+    """Today's date in Eastern time (NHL schedule uses ET, not UTC)."""
+    return datetime.now(tz=_EASTERN).date()
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -137,7 +145,7 @@ async def run_nhl_pipeline(game_date: str = None, dry_run: bool = False) -> dict
         Summary dict with keys: sport, status, games_processed, goalies_scored,
         skaters_scored, dry_run, elapsed_seconds, errors.
     """
-    target_date = date.fromisoformat(game_date) if game_date else date.today()
+    target_date = date.fromisoformat(game_date) if game_date else _today_eastern()
     date_str    = str(target_date)
     start_time  = time.monotonic()
     errors: list[str] = []
