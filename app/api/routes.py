@@ -424,7 +424,8 @@ async def pitchers_warnings(
     flag_rows = await db.execute(
         _text("""
             SELECT pitcher_id, pitcher_name, flag_type,
-                   actual_ks, floor_ks, actual_hits, floor_hits
+                   actual_ks, floor_ks, actual_hits, floor_hits,
+                   ks_misses, hits_misses
             FROM pitcher_warning_flags
             WHERE game_date = :today
             ORDER BY flag_type, pitcher_name
@@ -490,6 +491,8 @@ async def pitchers_warnings(
             floor_ks=f.floor_ks,
             actual_hits=f.actual_hits,
             floor_hits=f.floor_hits,
+            ks_misses=f.ks_misses,
+            hits_misses=f.hits_misses,
             hssi_score=sc.hssi if sc else None,
             kssi_score=sc.kssi if sc else None,
         ))

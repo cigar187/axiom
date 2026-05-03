@@ -168,6 +168,8 @@ class PitcherWarningFlag(BaseModel):
     floor_ks:     Optional[float] = None
     actual_hits:  Optional[float] = None
     floor_hits:   Optional[float] = None
+    ks_misses:    Optional[int]   = None
+    hits_misses:  Optional[int]   = None
     hssi_score:   Optional[float] = None
     kssi_score:   Optional[float] = None
 

@@ -1336,12 +1336,14 @@ async def _flag_underperforming_pitchers(target_date: "date") -> int:
                             (pitcher_id, pitcher_name, game_date,
                              actual_ks, floor_ks,
                              actual_hits, floor_hits,
-                             flag_type)
+                             flag_type,
+                             ks_misses, hits_misses)
                         VALUES
                             (:pid, :name, :today,
                              :actual_ks, :floor_ks,
                              :actual_hits, :floor_hits,
-                             :flag_type)
+                             :flag_type,
+                             :ks_misses, :hits_misses)
                     """),
                     {
                         "pid":         pitcher_id,
@@ -1352,6 +1354,8 @@ async def _flag_underperforming_pitchers(target_date: "date") -> int:
                         "actual_hits": last.actual_hits,
                         "floor_hits":  last.sim_median_hits,
                         "flag_type":   flag_type,
+                        "ks_misses":   ks_misses,
+                        "hits_misses": hits_misses,
                     },
                 )
                 flags_written += 1
