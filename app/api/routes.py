@@ -858,88 +858,88 @@ async def merlin_board(
             ModelOutputDaily.market_type == "hits_allowed",
         )
         .order_by(ModelOutputDaily.hssi.desc().nulls_last())
-    )
-    hits_rows = hits_result.all()
-
-    # Pull matching K rows for same pitchers
-    k_result = await db.execute(
-        select(ModelOutputDaily)
-        .where(
-            ModelOutputDaily.game_date == td,
-            ModelOutputDaily.market_type == "strikeouts",
         )
-    )
-    k_rows_by_pitcher = {r.pitcher_id: r for r in k_result.scalars().all()}
+        hits_rows = hits_result.all()
 
-    board = []
-    for h_out, h_pitcher, h_game in hits_rows:
-        k = k_rows_by_pitcher.get(h_out.pitcher_id)
+        # Pull matching K rows for same pitchers
+        k_result = await db.execute(
+            select(ModelOutputDaily)
+            .where(
+                ModelOutputDaily.game_date == td,
+                ModelOutputDaily.market_type == "strikeouts",
+            )
+        )
+        k_rows_by_pitcher = {r.pitcher_id: r for r in k_result.scalars().all()}
 
-        # Determine opponent from game info
-        pitcher_team_name_mb = get_team_name(h_pitcher.team_id) or ""
-        opponent_mb = (
-            h_game.away_team if pitcher_team_name_mb == h_game.home_team else h_game.home_team
-        ) if h_game else ""
+        board = []
+        for h_out, h_pitcher, h_game in hits_rows:
+            k = k_rows_by_pitcher.get(h_out.pitcher_id)
 
-        # Color tier for hits side
-        hssi_val = h_out.hssi or 0.0
-        if hssi_val >= 57:
-            hits_color = "GREEN"
-        elif hssi_val >= 45:
-            hits_color = "YELLOW"
-        else:
-            hits_color = "RED"
+            # Determine opponent from game info
+            pitcher_team_name_mb = get_team_name(h_pitcher.team_id) or ""
+            opponent_mb = (
+                h_game.away_team if pitcher_team_name_mb == h_game.home_team else h_game.home_team
+            ) if h_game else ""
 
-        # Color tier for K side
-        k_ceil = (k.sim_p95_ks if k else None) or 0.0
-        if k_ceil >= 9.0:
-            ks_color = "GREEN"
-        elif k_ceil >= 7.0:
-            ks_color = "YELLOW"
-        else:
-            ks_color = "RED"
+            # Color tier for hits side
+            hssi_val = h_out.hssi or 0.0
+            if hssi_val >= 57:
+                hits_color = "GREEN"
+            elif hssi_val >= 45:
+                hits_color = "YELLOW"
+            else:
+                hits_color = "RED"
 
-        board.append({
-            "pitcher":       h_pitcher.pitcher_name,
-            "team":          get_team_abbrev(h_pitcher.team_id) or h_pitcher.team_id,
-            "opponent":      opponent_mb,
-            "game":          h_out.game_id,
-            # ── Hits
-            "hssi":          h_out.hssi,
-            "hssi_grade":    h_out.grade,
-            "husi":          h_out.husi,
-            "husi_grade":    h_out.grade,
-            "hits_line":     h_out.line,
-            "h_floor":       h_out.sim_p5_hits,
-            "h_median":      h_out.sim_median_hits,
-            "h_ceil":        h_out.sim_p95_hits,
-            "h_over_pct":    h_out.sim_over_pct_hits,
-            "h_under_pct":   h_out.sim_under_pct_hits,
-            "hits_color":    hits_color,
-            # ── Ks
-            "kssi":          k.kssi if k else None,
-            "kssi_grade":    k.grade if k else None,
-            "kusi":          k.kusi if k else None,
-            "kusi_grade":    k.grade if k else None,
-            "k_line":        k.line if k else None,
-            "k_floor":       k.sim_p5_ks if k else None,
-            "k_median":      k.sim_median_ks if k else None,
-            "k_ceil":        k.sim_p95_ks if k else None,
-            "k_over_pct":    k.sim_over_pct_ks if k else None,
-            "k_under_pct":   k.sim_under_pct_ks if k else None,
-            "ks_color":      ks_color,
-            "kill_streak_prob": k.sim_kill_streak_prob if k else None,
-        })
+            # Color tier for K side
+            k_ceil = (k.sim_p95_ks if k else None) or 0.0
+            if k_ceil >= 9.0:
+                ks_color = "GREEN"
+            elif k_ceil >= 7.0:
+                ks_color = "YELLOW"
+            else:
+                ks_color = "RED"
 
-    return {
-        "date":    str(td),
-        "count":   len(board),
-        "board":   board,
-        "legend": {
-            "hits_color":  "GREEN=strong Under (HUSI>=57) | YELLOW=neutral | RED=risky",
-            "ks_color":    "GREEN=K Over potential (ceil>=9) | YELLOW=moderate | RED=low",
-        },
-    }
+            board.append({
+                "pitcher":       h_pitcher.pitcher_name,
+                "team":          get_team_abbrev(h_pitcher.team_id) or h_pitcher.team_id,
+                "opponent":      opponent_mb,
+                "game":          h_out.game_id,
+                # ── Hits
+                "hssi":          h_out.hssi,
+                "hssi_grade":    h_out.grade,
+                "husi":          h_out.husi,
+                "husi_grade":    h_out.grade,
+                "hits_line":     h_out.line,
+                "h_floor":       h_out.sim_p5_hits,
+                "h_median":      h_out.sim_median_hits,
+                "h_ceil":        h_out.sim_p95_hits,
+                "h_over_pct":    h_out.sim_over_pct_hits,
+                "h_under_pct":   h_out.sim_under_pct_hits,
+                "hits_color":    hits_color,
+                # ── Ks
+                "kssi":          k.kssi if k else None,
+                "kssi_grade":    k.grade if k else None,
+                "kusi":          k.kusi if k else None,
+                "kusi_grade":    k.grade if k else None,
+                "k_line":        k.line if k else None,
+                "k_floor":       k.sim_p5_ks if k else None,
+                "k_median":      k.sim_median_ks if k else None,
+                "k_ceil":        k.sim_p95_ks if k else None,
+                "k_over_pct":    k.sim_over_pct_ks if k else None,
+                "k_under_pct":   k.sim_under_pct_ks if k else None,
+                "ks_color":      ks_color,
+                "kill_streak_prob": k.sim_kill_streak_prob if k else None,
+            })
+
+        return {
+            "date":    str(td),
+            "count":   len(board),
+            "board":   board,
+            "legend": {
+                "hits_color":  "GREEN=strong Under (HUSI>=57) | YELLOW=neutral | RED=risky",
+                "ks_color":    "GREEN=K Over potential (ceil>=9) | YELLOW=moderate | RED=low",
+            },
+        }
     except Exception as exc:
         log.error("merlin_board: query failed", error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to load Merlin board.")
@@ -1137,66 +1137,66 @@ async def risk_today(
             )
         )
         .order_by(ModelOutputDaily.risk_score.desc())
-    )
+        )
 
-    rows = (await db.execute(stmt)).all()
+        rows = (await db.execute(stmt)).all()
 
-    if not rows:
+        if not rows:
+            return {
+                "date": query_date.isoformat(),
+                "message": "No risk data found for this date. Pipeline may not have run yet.",
+                "pitchers": [],
+                "summary": {},
+            }
+
+        pitchers = []
+        for output, pitcher, game in rows:
+            flags = (output.risk_flags or "").split("|") if output.risk_flags else []
+            r_tier = output.risk_tier or "LOW"
+
+            if tier and r_tier.upper() != tier.upper():
+                continue
+
+            p_team_name_risk = get_team_name(pitcher.team_id) or ""
+            opponent = (
+                game.away_team if p_team_name_risk == game.home_team else game.home_team
+            ) if game else ""
+
+            pitchers.append({
+                "pitcher":            pitcher.pitcher_name,
+                "team":               get_team_abbrev(pitcher.team_id) or pitcher.team_id,
+                "game_id":            output.game_id,
+                "risk_score":         output.risk_score or 0,
+                "risk_tier":          r_tier,
+                "risk_flags":         flags,
+                "combo_risk":         output.combo_risk or False,
+                "season_era_tier":    output.season_era_tier or "NORMAL",
+                "park_extreme":       output.park_extreme or False,
+                "park_hits_multiplier": output.park_hits_multiplier or 1.0,
+                "hssi":               output.hssi,
+                "husi":               output.husi,
+                "projected_hits":     output.projected_hits,
+                "grade":              output.grade,
+            })
+
+        # Summary counts
+        high     = sum(1 for p in pitchers if p["risk_tier"] == "HIGH")
+        moderate = sum(1 for p in pitchers if p["risk_tier"] == "MODERATE")
+        low      = sum(1 for p in pitchers if p["risk_tier"] == "LOW")
+        combos   = sum(1 for p in pitchers if p["combo_risk"])
+
         return {
             "date": query_date.isoformat(),
-            "message": "No risk data found for this date. Pipeline may not have run yet.",
-            "pitchers": [],
-            "summary": {},
+            "generated_by": "Axiom daily pipeline (Cloud Scheduler — 10 AM ET)",
+            "total_pitchers": len(pitchers),
+            "summary": {
+                "high_risk":    high,
+                "moderate_risk": moderate,
+                "low_risk":     low,
+                "combo_risk_count": combos,
+            },
+            "pitchers": pitchers,
         }
-
-    pitchers = []
-    for output, pitcher, game in rows:
-        flags = (output.risk_flags or "").split("|") if output.risk_flags else []
-        r_tier = output.risk_tier or "LOW"
-
-        if tier and r_tier.upper() != tier.upper():
-            continue
-
-        p_team_name_risk = get_team_name(pitcher.team_id) or ""
-        opponent = (
-            game.away_team if p_team_name_risk == game.home_team else game.home_team
-        ) if game else ""
-
-        pitchers.append({
-            "pitcher":            pitcher.pitcher_name,
-            "team":               get_team_abbrev(pitcher.team_id) or pitcher.team_id,
-            "game_id":            output.game_id,
-            "risk_score":         output.risk_score or 0,
-            "risk_tier":          r_tier,
-            "risk_flags":         flags,
-            "combo_risk":         output.combo_risk or False,
-            "season_era_tier":    output.season_era_tier or "NORMAL",
-            "park_extreme":       output.park_extreme or False,
-            "park_hits_multiplier": output.park_hits_multiplier or 1.0,
-            "hssi":               output.hssi,
-            "husi":               output.husi,
-            "projected_hits":     output.projected_hits,
-            "grade":              output.grade,
-        })
-
-    # Summary counts
-    high     = sum(1 for p in pitchers if p["risk_tier"] == "HIGH")
-    moderate = sum(1 for p in pitchers if p["risk_tier"] == "MODERATE")
-    low      = sum(1 for p in pitchers if p["risk_tier"] == "LOW")
-    combos   = sum(1 for p in pitchers if p["combo_risk"])
-
-    return {
-        "date": query_date.isoformat(),
-        "generated_by": "Axiom daily pipeline (Cloud Scheduler — 10 AM ET)",
-        "total_pitchers": len(pitchers),
-        "summary": {
-            "high_risk":    high,
-            "moderate_risk": moderate,
-            "low_risk":     low,
-            "combo_risk_count": combos,
-        },
-        "pitchers": pitchers,
-    }
     except Exception as exc:
         log.error("risk_today: query failed", error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to load risk report.")
