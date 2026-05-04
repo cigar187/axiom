@@ -479,6 +479,7 @@ async def _persist_nhl_results(
         ).on_conflict_do_update(
             index_elements=["game_id"],
             set_={
+                "game_date":          target_date,
                 "series_game_number": ctx.series_game_number,
                 "home_series_wins":   ctx.home_series_wins,
                 "away_series_wins":   ctx.away_series_wins,
