@@ -362,7 +362,7 @@ async def run_nhl_pipeline(game_date: str = None, dry_run: bool = False) -> dict
         for _team in set(list(_tg) + list(_tf) + list(_td)):
             _capped += sorted(_tg[_team],
                               key=lambda r: r["score"].get("gsai", 0),
-                              reverse=True)[:2]
+                              reverse=True)[:1]
             _capped += sorted(_tf[_team],
                               key=lambda r: r["score"].get("projected_points", 0),
                               reverse=True)[:12]
