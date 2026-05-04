@@ -20,7 +20,7 @@ def _today_eastern() -> date:
     return datetime.now(tz=_EASTERN).date()
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 # BackgroundTasks retained for run-daily and run-backfill endpoints
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, and_
@@ -45,20 +45,20 @@ from app.schemas.schemas import (
     BlockScores,
     PropLine,
     RunDailyRequest,
-    RunDailyResponse,
     PitcherWarningFlag,
     PitcherWarningsResponse,
     BookShieldPitcher,
     BookShieldResponse,
 )
 from app.tasks.pipeline import run_daily_pipeline
-from app.utils.csv_export import rows_to_csv, model_outputs_to_export_rows
+from app.utils.csv_export import rows_to_csv
 from app.utils.logging import get_logger
 from app.utils.teams import get_team_name, get_team_abbrev
 from app.core.products import PRODUCT_CATALOG, BUNDLES, product_tags_for_response
 
 log = get_logger("api")
 
+_CONTACT_EMAIL = "contact@gtmvelo.com"
 router = APIRouter()
 
 
@@ -455,10 +455,10 @@ async def pitchers_warnings(
 
     score_rows = await db.execute(
         _text("""
-            SELECT DISTINCT ON (mod.pitcher_id)
+            SELECT
                 mod.pitcher_id,
-                mod.hssi,
-                mod.kssi,
+                MAX(CASE WHEN mod.market_type = 'hits_allowed' THEN mod.hssi END) AS hssi,
+                MAX(CASE WHEN mod.market_type = 'strikeouts'   THEN mod.kssi END) AS kssi,
                 pp.team_id,
                 g.home_team,
                 g.away_team
@@ -470,7 +470,7 @@ async def pitchers_warnings(
               ON g.game_id = mod.game_id
             WHERE mod.game_date  = :today
               AND mod.pitcher_id = ANY(:pids)
-            ORDER BY mod.pitcher_id, mod.market_type
+            GROUP BY mod.pitcher_id, pp.team_id, g.home_team, g.away_team
         """),
         {"today": query_date, "pids": pitcher_ids},
     )
@@ -765,7 +765,7 @@ async def product_catalog(_: None = Depends(require_api_key)):
         "bundles": list(BUNDLES.values()),
         "total_products": len(PRODUCT_CATALOG),
         "total_bundles": len(BUNDLES),
-        "contact": "contact@gtmvelo.com",
+        "contact": _CONTACT_EMAIL,
         "note": (
             "All data products update daily before first pitch. "
             "SKU #34 (MGS) also delivers live in-game updates."
@@ -835,17 +835,18 @@ async def merlin_board(
     """
     The Merlin Board — combined hits + Ks report with simulation spreads.
 
-    Returns every starter for the day sorted by HUSI (best hit suppression first),
+    Returns every starter for the day sorted by HSSI (best hit suppression first),
     with formula scores, grades, and simulation floor/median/ceiling for both props.
 
     Color tier logic (for display clients):
-      Hits:  GREEN = HUSI >= 57 (A/A+)  |  YELLOW = HUSI 45-57 (B/C)  |  RED = HUSI < 45 (D)
+      Hits:  GREEN = HSSI >= 57 (A/A+)  |  YELLOW = HSSI 45-57 (B/C)  |  RED = HSSI < 45 (D)
       Ks:    GREEN = K-CEIL >= 9.0      |  YELLOW = K-CEIL 7.0-9.0    |  RED = K-CEIL < 7.0
     """
     td = target_date or date.today()
 
-    # Join with ProbablePitcher and Game to get pitcher names and team info
-    hits_result = await db.execute(
+    try:
+        # Join with ProbablePitcher and Game to get pitcher names and team info
+        hits_result = await db.execute(
         select(ModelOutputDaily, ProbablePitcher, Game)
         .join(ProbablePitcher, and_(
             ModelOutputDaily.pitcher_id == ProbablePitcher.pitcher_id,
@@ -939,6 +940,9 @@ async def merlin_board(
             "ks_color":    "GREEN=K Over potential (ceil>=9) | YELLOW=moderate | RED=low",
         },
     }
+    except Exception as exc:
+        log.error("merlin_board: query failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to load Merlin board.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1030,7 +1034,7 @@ async def export_daily_csv(
 # ─────────────────────────────────────────────────────────────
 
 class BackfillRequest(BaseModel):
-    season: str = "2026"
+    season: str = Field(default_factory=lambda: str(datetime.now().year))
 
 
 @router.post("/v1/tasks/run-backfill", tags=["Tasks"])
@@ -1117,8 +1121,9 @@ async def risk_today(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
 
-    # Pull one row per pitcher (hits_allowed market has the full risk data)
-    stmt = (
+    try:
+        # Pull one row per pitcher (hits_allowed market has the full risk data)
+        stmt = (
         select(ModelOutputDaily, ProbablePitcher, Game)
         .join(ProbablePitcher, and_(
             ModelOutputDaily.pitcher_id == ProbablePitcher.pitcher_id,
@@ -1192,6 +1197,9 @@ async def risk_today(
         },
         "pitchers": pitchers,
     }
+    except Exception as exc:
+        log.error("risk_today: query failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to load risk report.")
 
 
 # ── NFL QB Endpoints ──────────────────────────────────────────
@@ -1405,7 +1413,6 @@ async def nfl_qb_profile(
     week        = await _get_current_nfl_week(db, season_year)
 
     # Case-insensitive name match using ILIKE
-    from sqlalchemy import cast, String
     output_stmt = (
         select(NFLModelOutputDaily)
         .where(

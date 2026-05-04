@@ -92,7 +92,7 @@ def _signal_tag_goalie(fs: NHLGoalieFeatureSet, score: dict) -> Optional[str]:
       VOLATILE/BACKUP — GV1 triggered: unconfirmed or backup starter
       FATIGUE/B2B     — GV3 triggered: goalie's team on back-to-back
     """
-    if score["gsai"] >= 65:
+    if (score.get("gsai") or 0) >= 65:
         return "ELITE/STOP"
     if not fs.is_confirmed_starter:
         return "VOLATILE/BACKUP"
@@ -111,9 +111,10 @@ def _signal_tag_skater(fs: NHLSkaterFeatureSet, score: dict) -> Optional[str]:
       COLD/DEF    — PPSI < 44: stingy defensive matchup
       FATIGUE/B2B — PV2 triggered: player's team on back-to-back
     """
-    if score["ppsi"] >= 63:
+    ppsi_val = score.get("ppsi") or 0
+    if ppsi_val >= 63:
         return "HOT/MATCHUP"
-    if score["ppsi"] < 44:
+    if ppsi_val < 44:
         return "COLD/DEF"
     if fs.ctx:
         on_b2b = fs.ctx.home_b2b if fs.is_home else fs.ctx.away_b2b
@@ -563,25 +564,25 @@ async def _persist_nhl_results(
                 player_id      = player_id,
                 player_name    = player_name,
                 team           = team,
-                gsai_score     = score["gsai"],
+                gsai_score     = score.get("gsai"),
                 gss_score      = blocks.get("GSS"),
                 osq_score      = blocks.get("OSQ"),
                 top_score      = blocks.get("TOP"),
                 gen_score      = blocks.get("GEN"),
                 rfs_score      = blocks.get("RFS"),
                 tsc_score      = blocks.get("TSC"),
-                projected_shots = score["projected_shots"],
+                projected_shots = score.get("projected_shots"),
             ).on_conflict_do_update(
                 constraint="uq_nhl_goalie_feat_game_player",
                 set_={
-                    "gsai_score":      score["gsai"],
+                    "gsai_score":      score.get("gsai"),
                     "gss_score":       blocks.get("GSS"),
                     "osq_score":       blocks.get("OSQ"),
                     "top_score":       blocks.get("TOP"),
                     "gen_score":       blocks.get("GEN"),
                     "rfs_score":       blocks.get("RFS"),
                     "tsc_score":       blocks.get("TSC"),
-                    "projected_shots": score["projected_shots"],
+                    "projected_shots": score.get("projected_shots"),
                 },
             )
             await db.execute(feat_stmt)
@@ -595,31 +596,31 @@ async def _persist_nhl_results(
                 player_id         = player_id,
                 player_name       = player_name,
                 team              = team,
-                ppsi_score        = score["ppsi"],
+                ppsi_score        = score.get("ppsi"),
                 osr_score         = blocks.get("OSR"),
                 pmr_score         = blocks.get("PMR"),
                 per_score         = blocks.get("PER"),
                 pop_score         = blocks.get("POP"),
                 rps_score         = blocks.get("RPS"),
                 tld_score         = blocks.get("TLD"),
-                projected_pts     = score["projected_points"],
-                projected_sog     = score["projected_sog"],
-                projected_goals   = score["projected_goals"],
-                projected_assists = score["projected_assists"],
+                projected_pts     = score.get("projected_points"),
+                projected_sog     = score.get("projected_sog"),
+                projected_goals   = score.get("projected_goals"),
+                projected_assists = score.get("projected_assists"),
             ).on_conflict_do_update(
                 constraint="uq_nhl_skater_feat_game_player",
                 set_={
-                    "ppsi_score":        score["ppsi"],
+                    "ppsi_score":        score.get("ppsi"),
                     "osr_score":         blocks.get("OSR"),
                     "pmr_score":         blocks.get("PMR"),
                     "per_score":         blocks.get("PER"),
                     "pop_score":         blocks.get("POP"),
                     "rps_score":         blocks.get("RPS"),
                     "tld_score":         blocks.get("TLD"),
-                    "projected_pts":     score["projected_points"],
-                    "projected_sog":     score["projected_sog"],
-                    "projected_goals":   score["projected_goals"],
-                    "projected_assists": score["projected_assists"],
+                    "projected_pts":     score.get("projected_points"),
+                    "projected_sog":     score.get("projected_sog"),
+                    "projected_goals":   score.get("projected_goals"),
+                    "projected_assists": score.get("projected_assists"),
                 },
             )
             await db.execute(feat_stmt)

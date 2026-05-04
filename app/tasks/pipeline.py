@@ -18,7 +18,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.features import PitcherFeatureSet
@@ -815,9 +815,9 @@ async def _persist_results(
     # Upsert model outputs
     for result in scored_pitchers:
         features: PitcherFeatureSet = result["features"]
-        hssi_r = result["hssi"]
+        hssi_r = result.get("hssi") or {}
         husi_r = hssi_r
-        kssi_r = result["kssi"]
+        kssi_r = result.get("kssi") or {}
         kusi_r = kssi_r
         sim_r = result.get("sim")  # SimulationResult or None
         name_key = features.pitcher_name.strip().lower()
@@ -826,7 +826,7 @@ async def _persist_results(
         for market_type, index_score, index_key, proj_key, line_val, under_odds, sbok in [
             (
                 "hits_allowed",
-                hssi_r["hssi"],
+                hssi_r.get("hssi"),
                 "hssi",
                 "projected_hits",
                 features.hits_line,
@@ -835,7 +835,7 @@ async def _persist_results(
             ),
             (
                 "strikeouts",
-                kssi_r["kssi"],
+                kssi_r.get("kssi"),
                 "kssi",
                 "projected_ks",
                 features.k_line,
@@ -961,157 +961,168 @@ async def _persist_results(
     # Runs in its OWN session so that any ML failure cannot contaminate
     # the main formula session (which already committed above).
     # _persist_results is only called when not dry_run, so always run ML here.
-    if True:
-        try:
-            from app.ml.trainer import MLTrainer
-            from app.utils.ip_window import expected_ip as _expected_ip
-            from app.models.base import AsyncSessionLocal
-            ml_trainer = MLTrainer()
+    try:
+        from app.ml.trainer import MLTrainer
+        from app.utils.ip_window import expected_ip as _expected_ip
+        from app.models.base import AsyncSessionLocal
+        ml_trainer = MLTrainer()
 
-            # Build the sample dicts the ML trainer needs (merge features + outputs)
-            ml_samples = []
-            formula_outputs_by_pitcher: dict[str, dict] = {}
-            for result in scored_pitchers:
-                f: PitcherFeatureSet = result["features"]
-                hr = result["hssi"]
-                kr = result["kssi"]
-                # fragility_ip_cap MUST be included here so the ML training
-                # sample reflects the same IP that HUSI/KUSI actually used.
-                # Without it, the ML learns the wrong hits<->IP mapping for
-                # fragile pitchers and will over-project their stats.
-                exp_ip = _expected_ip(
-                    f.avg_ip_per_start,
-                    f.mlb_service_years,
-                    fragility_ip_cap=getattr(f, "fi_ip_cap", None),
+        # Build the sample dicts the ML trainer needs (merge features + outputs)
+        ml_samples = []
+        formula_outputs_by_pitcher: dict[str, dict] = {}
+        for result in scored_pitchers:
+            f: PitcherFeatureSet = result["features"]
+            hr = result["hssi"]
+            kr = result["kssi"]
+            # fragility_ip_cap MUST be included here so the ML training
+            # sample reflects the same IP that HUSI/KUSI actually used.
+            # Without it, the ML learns the wrong hits<->IP mapping for
+            # fragile pitchers and will over-project their stats.
+            exp_ip = _expected_ip(
+                f.avg_ip_per_start,
+                f.mlb_service_years,
+                fragility_ip_cap=getattr(f, "fi_ip_cap", None),
+            )
+            sample = {
+                "pitcher_id": f.pitcher_id,
+                "game_id": f.game_id,
+                "owc_score": hr.get("owc_score"), "pcs_score": hr.get("pcs_score"),
+                "ens_score": hr.get("ens_score"), "ops_score": hr.get("ops_score"),
+                "uhs_score": hr.get("uhs_score"), "dsc_score": hr.get("dsc_score"),
+                "ocr_score": kr.get("ocr_score"), "pmr_score": kr.get("pmr_score"),
+                "per_score": kr.get("per_score"), "kop_score": kr.get("kop_score"),
+                "uks_score": kr.get("uks_score"), "tlr_score": kr.get("tlr_score"),
+                "season_hits_per_9": f.season_hits_per_9,
+                "season_k_per_9": f.season_k_per_9,
+                "expected_ip": exp_ip,
+                "bullpen_fatigue_opp": f.bullpen_fatigue_opp,
+                "bullpen_fatigue_own": f.bullpen_fatigue_own,
+                "ens_park": f.ens_park,
+                "ens_temp": f.ens_temp,
+                "ens_air": f.ens_air,
+                "hssi": hr["hssi"], "husi": hr["hssi"],
+                "kssi": kr["kssi"], "kusi": kr["kssi"],
+                "projected_hits": hr.get("projected_hits"),
+                "projected_ks": kr.get("projected_ks"),
+                # Hidden variables for ML residual drift analysis
+                "catcher_strike_rate": f.catcher_strike_rate,
+                "tfi_rest_hours": f.tfi_rest_hours,
+                "tfi_tz_shift": f.tfi_tz_shift,
+                "vaa_degrees": f.vaa_degrees,
+                "extension_ft": f.extension_ft,
+            }
+            ml_samples.append(sample)
+            formula_outputs_by_pitcher[f.pitcher_id] = {
+                "hssi": hr["hssi"], "husi": hr["hssi"],
+                "kssi": kr["kssi"], "kusi": kr["kssi"],
+                "hssi_grade": hr["grade"], "husi_grade": hr["grade"],
+                "kssi_grade": kr["grade"], "kusi_grade": kr["grade"],
+                "projected_hits": hr.get("projected_hits"),
+                "projected_ks": kr.get("projected_ks"),
+            }
+
+        # ── Step 1: Collect today's samples (isolated — failure won't block training)
+        async with AsyncSessionLocal() as ml_session:
+            try:
+                await ml_trainer.collect_today(ml_session, target_date, ml_samples)
+                await ml_session.commit()
+            except Exception as e:
+                log.warning("ML collect_today failed (non-fatal)", error=str(e))
+                await ml_session.rollback()
+
+        # ── Step 2: Label any completed games from prior days
+        async with AsyncSessionLocal() as ml_session:
+            try:
+                await ml_trainer.label_completed_games(ml_session)
+                await ml_session.commit()
+            except Exception as e:
+                log.warning("ML label_completed_games failed (non-fatal)", error=str(e))
+                await ml_session.rollback()
+
+        # ── Step 2b: Flag pitchers with recent underperformance trends
+        flags_written = await _flag_underperforming_pitchers(target_date)
+        log.info("Pitcher warning flags written", count=flags_written)
+
+        # ── Step 3: Train + Predict (always runs regardless of steps 1/2)
+        ml_result = {"trained": False, "ml_outputs": []}
+        async with AsyncSessionLocal() as ml_session:
+            try:
+                ml_result = await ml_trainer.train_and_predict(
+                    ml_session, target_date, ml_samples, formula_outputs_by_pitcher
                 )
-                sample = {
-                    "pitcher_id": f.pitcher_id,
-                    "game_id": f.game_id,
-                    "owc_score": hr.get("owc_score"), "pcs_score": hr.get("pcs_score"),
-                    "ens_score": hr.get("ens_score"), "ops_score": hr.get("ops_score"),
-                    "uhs_score": hr.get("uhs_score"), "dsc_score": hr.get("dsc_score"),
-                    "ocr_score": kr.get("ocr_score"), "pmr_score": kr.get("pmr_score"),
-                    "per_score": kr.get("per_score"), "kop_score": kr.get("kop_score"),
-                    "uks_score": kr.get("uks_score"), "tlr_score": kr.get("tlr_score"),
-                    "season_hits_per_9": f.season_hits_per_9,
-                    "season_k_per_9": f.season_k_per_9,
-                    "expected_ip": exp_ip,
-                    "bullpen_fatigue_opp": f.bullpen_fatigue_opp,
-                    "bullpen_fatigue_own": f.bullpen_fatigue_own,
-                    "ens_park": f.ens_park,
-                    "ens_temp": f.ens_temp,
-                    "ens_air": f.ens_air,
-                    "hssi": hr["hssi"], "husi": hr["hssi"],
-                    "kssi": kr["kssi"], "kusi": kr["kssi"],
-                    "projected_hits": hr.get("projected_hits"),
-                    "projected_ks": kr.get("projected_ks"),
-                    # Hidden variables for ML residual drift analysis
-                    "catcher_strike_rate": f.catcher_strike_rate,
-                    "tfi_rest_hours": f.tfi_rest_hours,
-                    "tfi_tz_shift": f.tfi_tz_shift,
-                    "vaa_degrees": f.vaa_degrees,
-                    "extension_ft": f.extension_ft,
-                }
-                ml_samples.append(sample)
-                formula_outputs_by_pitcher[f.pitcher_id] = {
-                    "hssi": hr["hssi"], "husi": hr["hssi"],
-                    "kssi": kr["kssi"], "kusi": kr["kssi"],
-                    "hssi_grade": hr["grade"], "husi_grade": hr["grade"],
-                    "kssi_grade": kr["grade"], "kusi_grade": kr["grade"],
-                    "projected_hits": hr.get("projected_hits"),
-                    "projected_ks": kr.get("projected_ks"),
-                }
+                await ml_session.commit()
+                log.info("ML engine cycle complete",
+                         trained=ml_result.get("trained"),
+                         n_samples=ml_result.get("n_samples"),
+                         mae_hits=ml_result.get("mae_hits"),
+                         mae_ks=ml_result.get("mae_ks"),
+                         ml_outputs=len(ml_result.get("ml_outputs", [])))
 
-            # ── Step 1: Collect today's samples (isolated — failure won't block training)
-            async with AsyncSessionLocal() as ml_session:
-                try:
-                    await ml_trainer.collect_today(ml_session, target_date, ml_samples)
-                    await ml_session.commit()
-                except Exception as e:
-                    log.warning("ML collect_today failed (non-fatal)", error=str(e))
-                    await ml_session.rollback()
+                # ── Entropy Filter: measure agreement between Engine 1 and ML Engine
+                # Runs in its own session so a failure here cannot roll back ML outputs.
+                if ml_result.get("ml_outputs"):
+                    from sqlalchemy import text as _text
+                    async with AsyncSessionLocal() as entropy_session:
+                        try:
+                            for o in ml_result["ml_outputs"]:
+                                pid = o["pitcher_id"]
+                                formula = formula_outputs_by_pitcher.get(pid, {})
+                                e1_hits = formula.get("projected_hits")
+                                ml_hits = o.get("ml_proj_hits")
+                                e1_ks   = formula.get("projected_ks")
+                                ml_ks   = o.get("ml_proj_ks")
 
-            # ── Step 2: Label any completed games from prior days
-            async with AsyncSessionLocal() as ml_session:
-                try:
-                    await ml_trainer.label_completed_games(ml_session)
-                    await ml_session.commit()
-                except Exception as e:
-                    log.warning("ML label_completed_games failed (non-fatal)", error=str(e))
-                    await ml_session.rollback()
+                                hits_entropy = round(abs(e1_hits - ml_hits), 3) if e1_hits is not None and ml_hits is not None else None
+                                ks_entropy   = round(abs(e1_ks   - ml_ks),   3) if e1_ks   is not None and ml_ks   is not None else None
 
-            # ── Step 2b: Flag pitchers with recent underperformance trends
-            flags_written = await _flag_underperforming_pitchers(target_date)
-            log.info("Pitcher warning flags written", count=flags_written)
-
-            # ── Step 3: Train + Predict (always runs regardless of steps 1/2)
-            ml_result = {"trained": False, "ml_outputs": []}
-            async with AsyncSessionLocal() as ml_session:
-                try:
-                    ml_result = await ml_trainer.train_and_predict(
-                        ml_session, target_date, ml_samples, formula_outputs_by_pitcher
-                    )
-                    await ml_session.commit()
-                    log.info("ML engine cycle complete",
-                             trained=ml_result.get("trained"),
-                             n_samples=ml_result.get("n_samples"),
-                             mae_hits=ml_result.get("mae_hits"),
-                             mae_ks=ml_result.get("mae_ks"),
-                             ml_outputs=len(ml_result.get("ml_outputs", [])))
-
-                    # ── Entropy Filter: measure agreement between Engine 1 and ML Engine
-                    # Runs in its own session so a failure here cannot roll back ML outputs.
-                    if ml_result.get("ml_outputs"):
-                        from sqlalchemy import text as _text
-                        async with AsyncSessionLocal() as entropy_session:
-                            try:
-                                for o in ml_result["ml_outputs"]:
-                                    pid = o["pitcher_id"]
-                                    formula = formula_outputs_by_pitcher.get(pid, {})
-                                    e1_hits = formula.get("projected_hits")
-                                    ml_hits = o.get("ml_proj_hits")
-                                    e1_ks   = formula.get("projected_ks")
-                                    ml_ks   = o.get("ml_proj_ks")
-
-                                    hits_entropy = round(abs(e1_hits - ml_hits), 3) if e1_hits is not None and ml_hits is not None else None
-                                    ks_entropy   = round(abs(e1_ks   - ml_ks),   3) if e1_ks   is not None and ml_ks   is not None else None
-
-                                    if hits_entropy is not None and ks_entropy is not None:
-                                        if hits_entropy >= 1.4 or ks_entropy >= 1.4:
-                                            entropy_label = "HIGH_ENTROPY"
-                                        elif hits_entropy >= 0.8 or ks_entropy >= 0.8:
-                                            entropy_label = "DIVERGING"
-                                        else:
-                                            entropy_label = "ALIGNED"
+                                if hits_entropy is not None and ks_entropy is not None:
+                                    if hits_entropy >= 1.4 or ks_entropy >= 1.4:
+                                        entropy_label = "HIGH_ENTROPY"
+                                    elif hits_entropy >= 0.8 or ks_entropy >= 0.8:
+                                        entropy_label = "DIVERGING"
                                     else:
-                                        entropy_label = None
+                                        entropy_label = "ALIGNED"
+                                else:
+                                    entropy_label = None
 
-                                    await entropy_session.execute(
-                                        _text("""
-                                            UPDATE model_outputs_daily
-                                            SET hits_entropy  = :he,
-                                                ks_entropy    = :ke,
-                                                entropy_label = :el
-                                            WHERE pitcher_id = :pid
-                                              AND game_date  = :gd
-                                        """),
-                                        {"he": hits_entropy, "ke": ks_entropy,
-                                         "el": entropy_label, "pid": pid, "gd": target_date},
-                                    )
-                                await entropy_session.commit()
-                                log.info("Entropy filter written",
-                                         pitchers=len(ml_result["ml_outputs"]))
-                            except Exception as entropy_exc:
-                                log.warning("Entropy filter write failed (non-fatal)",
-                                            error=str(entropy_exc))
-                                await entropy_session.rollback()
+                                await entropy_session.execute(
+                                    _text("""
+                                        UPDATE model_outputs_daily
+                                        SET hits_entropy  = :he,
+                                            entropy_label = :el
+                                        WHERE pitcher_id  = :pid
+                                          AND game_date   = :gd
+                                          AND market_type = 'hits_allowed'
+                                    """),
+                                    {"he": hits_entropy,
+                                     "el": entropy_label, "pid": pid, "gd": target_date},
+                                )
+                                await entropy_session.execute(
+                                    _text("""
+                                        UPDATE model_outputs_daily
+                                        SET ks_entropy    = :ke,
+                                            entropy_label = :el
+                                        WHERE pitcher_id  = :pid
+                                          AND game_date   = :gd
+                                          AND market_type = 'strikeouts'
+                                    """),
+                                    {"ke": ks_entropy,
+                                     "el": entropy_label, "pid": pid, "gd": target_date},
+                                )
+                            await entropy_session.commit()
+                            log.info("Entropy filter written",
+                                     pitchers=len(ml_result["ml_outputs"]))
+                        except Exception as entropy_exc:
+                            log.warning("Entropy filter write failed (non-fatal)",
+                                        error=str(entropy_exc))
+                            await entropy_session.rollback()
 
-                except Exception as e:
-                    log.warning("ML train_and_predict failed (non-fatal)", error=str(e))
-                    await ml_session.rollback()
+            except Exception as e:
+                log.warning("ML train_and_predict failed (non-fatal)", error=str(e))
+                await ml_session.rollback()
 
-        except Exception as ml_exc:
-            log.warning("ML engine cycle failed (non-fatal)", error=str(ml_exc))
+    except Exception as ml_exc:
+        log.warning("ML engine cycle failed (non-fatal)", error=str(ml_exc))
 
     # ── Axiom Lineup Vault — store every batter's stats for every game we score
     # This gives Axiom ownership of historical lineup data and powers the
@@ -1199,6 +1210,8 @@ def _quality_flag(f: PitcherFeatureSet) -> str:
 
 
 def _confidence_label(score: float) -> str:
+    if score is None:
+        return "WEAK"
     if score >= 76:
         return "HIGH"
     elif score >= 65:

@@ -60,6 +60,8 @@ class PitcherTodayRow(BaseModel):
     hits_edge: Optional[float] = None
     husi: Optional[float] = None
     husi_grade: Optional[str] = None
+    hssi: Optional[float] = None
+    hssi_grade: Optional[str] = None
 
     # Strikeouts
     k_line: Optional[float] = None
@@ -70,12 +72,18 @@ class PitcherTodayRow(BaseModel):
     k_edge: Optional[float] = None
     kusi: Optional[float] = None
     kusi_grade: Optional[str] = None
+    kssi: Optional[float] = None
+    kssi_grade: Optional[str] = None
 
     # Shared
     interaction_boost_husi: Optional[float] = None
     interaction_boost_kusi: Optional[float] = None
     volatility_penalty_husi: Optional[float] = None
     volatility_penalty_kusi: Optional[float] = None
+    interaction_boost_hssi: Optional[float] = None
+    interaction_boost_kssi: Optional[float] = None
+    volatility_penalty_hssi: Optional[float] = None
+    volatility_penalty_kssi: Optional[float] = None
     confidence: Optional[str] = None
     notes: Optional[str] = None
     data_quality_flag: Optional[str] = None
@@ -85,10 +93,16 @@ class PitcherTodayRow(BaseModel):
     ml_kusi: Optional[float] = None
     ml_husi_grade: Optional[str] = None
     ml_kusi_grade: Optional[str] = None
+    ml_hssi: Optional[float] = None
+    ml_kssi: Optional[float] = None
+    ml_hssi_grade: Optional[str] = None
+    ml_kssi_grade: Optional[str] = None
     ml_proj_hits: Optional[float] = None
     ml_proj_ks: Optional[float] = None
     husi_signal: Optional[str] = None   # ALIGNED / SLIGHT_DIFF / DIVERGENT / CONFLICT
     kusi_signal: Optional[str] = None
+    hssi_signal: Optional[str] = None
+    kssi_signal: Optional[str] = None
 
     # Entropy Filter — agreement between Engine 1 (formula) and Engine 2 (ML)
     hits_entropy:  Optional[float] = None  # |formula projected_hits − ml projected_hits|
@@ -210,7 +224,7 @@ class RankingRow(BaseModel):
     under_odds: Optional[float] = None
     projection: Optional[float] = None
     edge: Optional[float] = None
-    index_score: Optional[float] = None   # HUSI or KUSI depending on market
+    index_score: Optional[float] = None   # HSSI or KSSI depending on market
     grade: Optional[str] = None
     confidence: Optional[str] = None
     data_quality_flag: Optional[str] = None
