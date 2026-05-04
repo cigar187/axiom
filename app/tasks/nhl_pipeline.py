@@ -40,6 +40,7 @@ def _today_eastern() -> date:
     """Today's date in Eastern time (NHL schedule uses ET, not UTC)."""
     return datetime.now(tz=_EASTERN).date()
 
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.nhl.features import NHLGoalieFeatureSet, NHLSkaterFeatureSet
@@ -486,6 +487,18 @@ async def _persist_nhl_results(
         await db.execute(stmt)
 
     log.info("NHL pipeline: nhl_games upserted", count=len(game_contexts))
+
+    # ── Delete stale goalie feature rows for today's games ───
+    # Required so that a re-run after the [:1] cap fix doesn't
+    # leave backup-goalie rows from a previous run in the table.
+    game_ids_today = [ctx.game_id for ctx in game_contexts]
+    if game_ids_today:
+        await db.execute(
+            delete(NHLGoalieFeaturesDaily).where(
+                NHLGoalieFeaturesDaily.game_id.in_(game_ids_today)
+            )
+        )
+        log.info("NHL pipeline: cleared stale goalie rows", game_ids=game_ids_today)
 
     # ── Upsert nhl_game_rosters, features, and outputs ───────
     goalie_feat_count  = 0
