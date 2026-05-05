@@ -532,6 +532,8 @@ async def _last3_hit_rates(
     if not pitcher_ids:
         return {}
 
+    from sqlalchemy import text as _text
+
     # ── 1. Season medians per pitcher (fallback when line is null)
     median_rows = await db.execute(
         _text("""
