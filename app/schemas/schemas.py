@@ -201,6 +201,8 @@ class BookShieldPitcher(BaseModel):
     no_line_market: str                    # "strikeouts" | "hits_allowed" | "both"
     hssi_score:     Optional[float] = None
     kssi_score:     Optional[float] = None
+    ks_last3:       Optional[int]   = None  # 0–3: starts hitting K median last 3
+    hits_last3:     Optional[int]   = None  # 0–3: starts hitting H median last 3
 
 class BookShieldResponse(BaseModel):
     date:          str

@@ -31,6 +31,7 @@ from app.models.models import (
     Game, ProbablePitcher, ModelOutputDaily, PitcherFeaturesDaily, MLModelOutput, ApiKey,
     NFLModelOutputDaily, NFLQBFeaturesDaily,
     NHLGame, NHLModelOutputDaily, NHLGoalieFeaturesDaily, NHLSkaterFeaturesDaily,
+    MLTrainingSample,
 )
 from app.schemas.schemas import (
     HealthResponse,
@@ -513,6 +514,95 @@ async def pitchers_warnings(
     )
 
 
+async def _last3_hit_rates(
+    db: AsyncSession,
+    pitcher_ids: list[str],
+) -> dict[str, tuple[int, int]]:
+    """
+    For each pitcher_id, look at their 3 most recent completed starts
+    (actual_ks and actual_hits both non-null in ml_training_samples).
+
+    "Hit the line" means:
+      - K:  actual_ks   >= line from model_outputs_daily for that game/market
+      - H:  actual_hits >= line from model_outputs_daily for that game/market
+    Fallback when no line existed: use that pitcher's season median for that stat.
+
+    Returns dict: { pitcher_id: (ks_last3, hits_last3) }  — values are 0–3.
+    """
+    if not pitcher_ids:
+        return {}
+
+    # ── 1. Season medians per pitcher (fallback when line is null)
+    median_rows = await db.execute(
+        _text("""
+            SELECT
+                pitcher_id,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY actual_ks)   AS med_ks,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY actual_hits) AS med_hits
+            FROM ml_training_samples
+            WHERE pitcher_id = ANY(:ids)
+              AND actual_ks   IS NOT NULL
+              AND actual_hits IS NOT NULL
+            GROUP BY pitcher_id
+        """),
+        {"ids": pitcher_ids},
+    )
+    medians: dict[str, tuple[float, float]] = {
+        r.pitcher_id: (r.med_ks or 0.0, r.med_hits or 0.0)
+        for r in median_rows.fetchall()
+    }
+
+    # ── 2. 3 most-recent completed starts per pitcher, with lines joined
+    sample_rows = await db.execute(
+        _text("""
+            SELECT
+                s.pitcher_id,
+                s.game_id,
+                s.actual_ks,
+                s.actual_hits,
+                ks_mod.line  AS ks_line,
+                hit_mod.line AS hit_line
+            FROM (
+                SELECT pitcher_id, game_id, actual_ks, actual_hits,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY pitcher_id
+                           ORDER BY game_date DESC
+                       ) AS rn
+                FROM ml_training_samples
+                WHERE pitcher_id = ANY(:ids)
+                  AND actual_ks   IS NOT NULL
+                  AND actual_hits IS NOT NULL
+            ) s
+            LEFT JOIN model_outputs_daily ks_mod
+              ON ks_mod.pitcher_id  = s.pitcher_id
+             AND ks_mod.game_id     = s.game_id
+             AND ks_mod.market_type = 'strikeouts'
+            LEFT JOIN model_outputs_daily hit_mod
+              ON hit_mod.pitcher_id  = s.pitcher_id
+             AND hit_mod.game_id     = s.game_id
+             AND hit_mod.market_type = 'hits_allowed'
+            WHERE s.rn <= 3
+        """),
+        {"ids": pitcher_ids},
+    )
+
+    # ── 3. Tally per pitcher
+    counts: dict[str, list[int]] = {}   # pitcher_id -> [ks_hits, hit_hits]
+    for r in sample_rows.fetchall():
+        pid = r.pitcher_id
+        med_ks, med_hits = medians.get(pid, (0.0, 0.0))
+        ks_threshold  = r.ks_line  if r.ks_line  is not None else med_ks
+        hit_threshold = r.hit_line if r.hit_line is not None else med_hits
+        ks_hit  = 1 if (r.actual_ks   is not None and r.actual_ks   >= ks_threshold)  else 0
+        hit_hit = 1 if (r.actual_hits is not None and r.actual_hits >= hit_threshold) else 0
+        if pid not in counts:
+            counts[pid] = [0, 0]
+        counts[pid][0] += ks_hit
+        counts[pid][1] += hit_hit
+
+    return {pid: (v[0], v[1]) for pid, v in counts.items()}
+
+
 @router.get("/v1/pitchers/bookshield", tags=["Pitchers"])
 async def pitchers_bookshield(
     target_date: Optional[date] = Query(
@@ -576,7 +666,11 @@ async def pitchers_bookshield(
 
     clean = [r for r in candidates if str(r.pitcher_id) not in flagged]
 
-    # ── 3. Build response
+    # ── 3. Last-3 hit rates for clean pitchers
+    clean_pitcher_ids = [str(r.pitcher_id) for r in clean]
+    last3 = await _last3_hit_rates(db, clean_pitcher_ids)
+
+    # ── 4. Build response
     pitchers = []
     for r in clean:
         team_abbrev = get_team_abbrev(r.team_id) if r.team_id else None
@@ -592,6 +686,8 @@ async def pitchers_bookshield(
         else:
             market = "hits_allowed"
 
+        ks_l3, hits_l3 = last3.get(str(r.pitcher_id), (None, None))
+
         pitchers.append(BookShieldPitcher(
             pitcher_name=r.pitcher_name,
             team=team_abbrev,
@@ -599,6 +695,8 @@ async def pitchers_bookshield(
             no_line_market=market,
             hssi_score=r.hssi,
             kssi_score=r.kssi,
+            ks_last3=ks_l3,
+            hits_last3=hits_l3,
         ))
 
     return BookShieldResponse(
