@@ -7,7 +7,7 @@ Formula implemented exactly as specified:
   KSSI_base = 0.28*OCR + 0.22*PMR + 0.18*PER + 0.14*KOP + 0.10*UKS + 0.08*TLR
 
   OCR = 0.22*K + 0.20*CON + 0.16*ZCON + 0.14*DISC + 0.12*2S + 0.10*FOUL + 0.06*DEC
-  PMR = 0.22*P1 + 0.16*P2 + 0.18*PUT + 0.16*RUN + 0.16*TOP6 + 0.12*PLAT
+  PMR = 0.20*P1 + 0.14*P2 + 0.18*PUT + 0.16*RUN + 0.14*TOP6 + 0.18*PLAT
   PER = 0.22*PPA + 0.20*BB + 0.16*FPS + 0.14*DEEP + 0.12*PUTW + 0.10*CMDD + 0.06*VELO
   KOP = 0.24*PCAP + 0.18*HOOK + 0.16*TTO + 0.12*BPEN + 0.12*PAT + 0.10*INJ + 0.08*FAT
   UKS = 0.34*TIGHT + 0.26*CSTRL + 0.22*2EXP + 0.18*COUNT
@@ -125,12 +125,12 @@ def score_pmr(f: PitcherFeatureSet) -> float:
     plat = _f(f.pmr_plat)
 
     pmr = (
-        0.22 * p1   +
-        0.16 * p2   +
+        0.20 * p1   +
+        0.14 * p2   +
         0.18 * put  +
         0.16 * run  +
-        0.16 * top6 +
-        0.12 * plat
+        0.14 * top6 +
+        0.18 * plat
     )
     log.debug("KSSI PMR", pitcher=f.pitcher_name,
               p1=p1, p2=p2, put=put, run=run, top6=top6, plat=plat, pmr=round(pmr, 2))
@@ -343,7 +343,12 @@ def compute_kssi_interaction(
 # Volatility penalties
 # ─────────────────────────────────────────────────────────────
 
-def compute_kssi_volatility(f: PitcherFeatureSet, silent: bool = False) -> float:
+def compute_kssi_volatility(
+    f: PitcherFeatureSet,
+    ocr: float = 50.0,
+    tlr: float = 50.0,
+    silent: bool = False,
+) -> float:
     """
     Apply KSSI volatility penalties. Returns total penalty (capped at 8.5).
     Each triggered penalty is logged individually.
@@ -390,6 +395,14 @@ def compute_kssi_volatility(f: PitcherFeatureSet, silent: bool = False) -> float
         penalty += 1.5
         if not silent:
             log.info("KSSI KV8 opponent boom-bust K volatility", pitcher=name, penalty=1.5)
+
+    # KC1: Confirmed lineup boost — mirrors KV1 asymmetry.
+    # Uncertainty costs -2.5. Certainty earns +1.5 when OCR > 65 and TLR > 60.
+    if f.lineup_confirmed and ocr > 65 and tlr > 60:
+        penalty -= 1.5
+        if not silent:
+            log.info("KSSI KC1 confirmed lineup boost", pitcher=name,
+                     ocr=ocr, tlr=tlr, boost=1.5)
 
     capped = min(penalty, 8.5)
     if not silent:
@@ -497,7 +510,7 @@ def compute_kssi(f: PitcherFeatureSet, silent: bool = False) -> dict:
     )
 
     # ── Volatility penalties
-    volatility = compute_kssi_volatility(f, silent=silent)
+    volatility = compute_kssi_volatility(f, ocr=ocr, tlr=tlr, silent=silent)
 
     # ── Final KSSI (pre-bullpen)
     kssi_raw = kssi_base + interaction - volatility
