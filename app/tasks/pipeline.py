@@ -800,6 +800,12 @@ async def _persist_results(
             umpire_confirmed=features.umpire_confirmed,
             bullpen_data_available=features.bullpen_data_available,
             data_quality_flag=_quality_flag(features),
+            # Hidden variables
+            catcher_strike_rate=features.catcher_strike_rate,
+            tfi_rest_hours=features.tfi_rest_hours,
+            tfi_tz_shift=features.tfi_tz_shift,
+            vaa_degrees=features.vaa_degrees,
+            extension_ft=features.extension_ft,
         ).on_conflict_do_update(
             constraint="uq_feat_pitcher_game",
             set_={
@@ -807,7 +813,12 @@ async def _persist_results(
                 "pcs_score": husi_r.get("pcs_score"),
                 "ens_score": husi_r.get("ens_score"),
                 "ocr_score": kusi_r.get("ocr_score"),
-                "data_quality_flag": _quality_flag(features),
+                "data_quality_flag":    _quality_flag(features),
+                "catcher_strike_rate":  features.catcher_strike_rate,
+                "tfi_rest_hours":       features.tfi_rest_hours,
+                "tfi_tz_shift":         features.tfi_tz_shift,
+                "vaa_degrees":          features.vaa_degrees,
+                "extension_ft":         features.extension_ft,
             },
         )
         await db.execute(stmt)

@@ -239,6 +239,13 @@ class PitcherFeaturesDaily(Base):
     bullpen_data_available: Mapped[bool] = mapped_column(Boolean, default=False)
     data_quality_flag: Mapped[Optional[str]] = mapped_column(String(32), default="partial")
 
+    # ── Hidden variables (diagnostic + ML features)
+    catcher_strike_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tfi_rest_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tfi_tz_shift: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    vaa_degrees: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    extension_ft: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     pitcher_record: Mapped["ProbablePitcher"] = relationship(
